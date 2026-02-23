@@ -1,0 +1,14 @@
+== test.Compile let binding ==
+
+(let (x 4) (+ 1 x))
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    load_one
+  0003    1    load_local        1
+  0005    1    add               2
+  0007    1    ppop_n            1
+  0009    1    ret
+ Constants
+  0   number     4

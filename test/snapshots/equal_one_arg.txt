@@ -1,0 +1,9 @@
+== test.Compile comparison forms ==
+
+(= 1)
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_one
+  0001    1    eq                1
+  0003    1    ret

@@ -1,0 +1,8 @@
+== test.Compile data literals ==
+
+false
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_false
+  0001    1    ret

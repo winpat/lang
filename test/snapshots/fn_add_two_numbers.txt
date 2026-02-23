@@ -1,0 +1,17 @@
+== test.Compile fn form ==
+
+(fn add (x y) (+ x y))
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    ret
+ Constants
+  0   object     <fn add>
+
+==== <fn add> ====
+ Bytecode
+  0000    1    load_local        1
+  0002    1    load_local        2
+  0004    1    add               2
+  0006    1    ret

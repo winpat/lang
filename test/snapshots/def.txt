@@ -1,0 +1,12 @@
+== test.Compile def form ==
+
+(def x 1)
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    load_one
+  0003    1    define_global
+  0004    1    ret
+ Constants
+  0   object     x
