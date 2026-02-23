@@ -1,0 +1,6 @@
+== test.Compile arithmetic forms ==
+
+=== Bytecode ===
+  0000    1    load_one
+  0001    1    div               1
+  0003    1    ret

@@ -1,0 +1,11 @@
+== test.Compile comparison forms ==
+
+=== Bytecode ===
+  0000    1    load_constant     0
+  0002    1    load_constant     1
+  0004    1    le                2
+  0006    1    ret
+
+=== Constants ===
+  0   number     2
+  1   number     3

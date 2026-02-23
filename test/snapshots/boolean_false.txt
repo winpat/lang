@@ -1,0 +1,5 @@
+== test.Compile data literals ==
+
+=== Bytecode ===
+  0000    1    load_false
+  0001    1    ret

@@ -1,0 +1,14 @@
+== test.Compile if form ==
+
+=== Bytecode ===
+  0000    1    load_true
+  0001    1    jmpf              5
+  0004    1    pop
+  0005    1    load_one
+  0006    1    jmp               3
+  0009    1    pop
+  0010    1    load_constant     0
+  0012    1    ret
+
+=== Constants ===
+  0   number     2

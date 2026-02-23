@@ -1,0 +1,11 @@
+== test.Compile logical operator forms ==
+
+=== Bytecode ===
+  0000    1    load_nil
+  0001    1    jmpt              3
+  0004    1    pop
+  0005    1    load_constant     0
+  0007    1    ret
+
+=== Constants ===
+  0   number     3

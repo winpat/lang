@@ -1,0 +1,6 @@
+== test.Compile comparison forms ==
+
+=== Bytecode ===
+  0000    1    load_one
+  0001    1    gt                1
+  0003    1    ret

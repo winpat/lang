@@ -1,0 +1,8 @@
+== test.Compile data literals ==
+
+=== Bytecode ===
+  0000    1    load_constant     0
+  0002    1    ret
+
+=== Constants ===
+  0   number     12

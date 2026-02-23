@@ -20,6 +20,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    const opts = b.addOptions();
+    opts.addOption(
+        []const u8,
+        "snapshot_dir",
+        b.path("test/snapshots").getPath(b),
+    );
+    opts.addOption(
+        bool,
+        "update_snapshots",
+        b.option(bool, "update_snapshots", "Update snapshots.") orelse false,
+    );
+    mod.addImport("opts", opts.createModule());
+
     // zig build run
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
