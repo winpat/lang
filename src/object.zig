@@ -40,6 +40,15 @@ pub const Object = struct {
         return @alignCast(@constCast(@fieldParentPtr("obj", self)));
     }
 
+    pub fn typeByTag(tag: Tag) type {
+        return switch (tag) {
+            .func => Func,
+            .string => String,
+            .symbol => Symbol,
+            .node => Node,
+        };
+    }
+
     pub fn format(self: *Object, writer: *Io.Writer) Io.Writer.Error!void {
         switch (self.tag) {
             .node => try writer.print("{f}", .{self.as(Node)}),
