@@ -5,6 +5,7 @@ const meta = std.meta;
 
 const Compiler = @import("compiler.zig").Compiler;
 const Func = @import("object.zig").Func;
+const Gc = @import("garbage_collector.zig").GarbageCollector;
 const Op = @import("bytecode.zig").Op;
 const Parser = @import("parser.zig").Parser;
 const Value = @import("value.zig").Value;
@@ -146,13 +147,11 @@ test "Disassemble bytecode" {
 
     const ast = try parser.parse();
 
-    var cpl = Compiler.init(tst.allocator);
-    const func = try cpl.compile(ast);
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
 
-    defer {
-        func.deinit(tst.allocator);
-        tst.allocator.destroy(func);
-    }
+    var cpl = Compiler.init(tst.allocator, &gc);
+    const func = try cpl.compile(ast);
 
     const expected =
         \\=== <fn *main*> ===

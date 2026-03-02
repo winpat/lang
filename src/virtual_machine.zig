@@ -7,6 +7,7 @@ const StringHashMap = std.StringHashMapUnmanaged;
 const ArrayList = std.ArrayList;
 
 const Compiler = @import("compiler.zig").Compiler;
+const Gc = @import("garbage_collector.zig").GarbageCollector;
 const object = @import("object.zig");
 const Object = object.Object;
 const Func = object.Func;
@@ -19,12 +20,16 @@ const stack_depth_max: usize = 256;
 
 pub const VirtualMachine = struct {
     allocator: Allocator,
+    gc: *Gc,
     globals: StringHashMap(Value) = .{},
     frames: ArrayList(CallFrame) = .{},
     stack: Stack = .{},
 
-    pub fn init(allocator: Allocator) VirtualMachine {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: Allocator, gc: *Gc) VirtualMachine {
+        return .{
+            .allocator = allocator,
+            .gc = gc,
+        };
     }
 
     pub fn deinit(self: *VirtualMachine) void {
@@ -385,14 +390,13 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     defer parser.deinit();
     const ast = try parser.parse();
 
-    var compiler = Compiler.init(allocator);
-    const func = try compiler.compile(ast);
-    defer {
-        func.deinit(allocator);
-        allocator.destroy(func);
-    }
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
 
-    var vm = VirtualMachine.init(allocator);
+    var compiler = Compiler.init(allocator, &gc);
+    const func = try compiler.compile(ast);
+
+    var vm = VirtualMachine.init(allocator, &gc);
     defer vm.deinit();
     const result = try vm.run(func);
 

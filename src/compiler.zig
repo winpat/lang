@@ -12,6 +12,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const opts = @import("opts");
 
 const disassemble = @import("disassembler.zig").disassemble;
+const Gc = @import("garbage_collector.zig").GarbageCollector;
 const object = @import("object.zig");
 const Func = object.Func;
 const String = object.String;
@@ -27,13 +28,20 @@ const List = value.List;
 
 pub const Compiler = struct {
     allocator: Allocator,
+    gc: *Gc,
 
-    pub fn init(allocator: Allocator) Compiler {
-        return .{ .allocator = allocator };
+    pub fn init(allocator: Allocator, gc: *Gc) Compiler {
+        return .{
+            .allocator = allocator,
+            .gc = gc,
+        };
     }
 
     pub fn compile(self: *Compiler, ast: Ast) CompileError!*Func {
-        var target = try FuncState.initWithName(self.allocator, 0, 0, "*main*");
+        self.gc.disable();
+        defer self.gc.enable();
+
+        var target = try FuncState.init(self.allocator, self.gc, "*main*", 0, 0);
         defer target.deinit();
 
         for (ast.nodes) |node|
@@ -46,9 +54,7 @@ pub const Compiler = struct {
 
         try target.addOp(Op.ret, return_line);
 
-        const func = try self.allocator.create(Func);
-        func.* = try target.build(self.allocator);
-        return func;
+        return try target.build();
     }
 };
 
@@ -124,14 +130,7 @@ fn emitString(target: *FuncState, node: Node.String) CompileError!void {
     if (findStringConstant(target, node.chars)) |cidx| {
         try target.addOpWithByte(.load_constant, cidx, node.line);
     } else {
-        const allocator = target.allocator;
-
-        const string = try allocator.create(String);
-        errdefer allocator.destroy(string);
-
-        string.* = try String.init(allocator, node.chars);
-        errdefer string.deinit(allocator);
-
+        const string = try target.gc.create(String, .{node.chars});
         const cidx = try target.addConstant(.{ .object = &string.obj });
         try target.addOpWithByte(.load_constant, cidx, node.line);
     }
@@ -151,18 +150,19 @@ fn findStringConstant(target: *FuncState, chars: []const u8) ?u8 {
     return null;
 }
 
+fn emitSymbolLookup(target: *FuncState, node: Node.Symbol) CompileError!void {
+    if (target.resolveLocal(node.name)) |idx|
+        return try target.addOpWithByte(.load_local, idx, node.line);
+
+    try emitSymbol(target, node);
+    try target.addOp(.load_global, node.line);
+}
+
 fn emitSymbol(target: *FuncState, node: Node.Symbol) CompileError!void {
     if (findSymbolConstant(target, node.name)) |cidx| {
         try target.addOpWithByte(.load_constant, cidx, node.line);
     } else {
-        const allocator = target.allocator;
-
-        const symbol = try allocator.create(Symbol);
-        errdefer allocator.destroy(symbol);
-
-        symbol.* = try Symbol.init(target.allocator, node.name);
-        errdefer symbol.deinit(allocator);
-
+        const symbol = try target.gc.create(Symbol, .{node.name});
         const cidx = try target.addConstant(.{ .object = &symbol.obj });
         try target.addOpWithByte(.load_constant, cidx, node.line);
     }
@@ -180,14 +180,6 @@ fn findSymbolConstant(target: *FuncState, name: []const u8) ?u8 {
         }
     }
     return null;
-}
-
-fn emitSymbolLookup(target: *FuncState, node: Node.Symbol) CompileError!void {
-    if (target.resolveLocal(node.name)) |idx|
-        return try target.addOpWithByte(.load_local, idx, node.line);
-
-    try emitSymbol(target, node);
-    try target.addOp(.load_global, node.line);
 }
 
 fn emitConstant(target: *FuncState, constant: Value, line: u32) CompileError!void {
@@ -234,10 +226,13 @@ fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
     const params = form.items[params_idx].list.items;
     const arity: u8 = @intCast(params.len);
 
-    var func_state = try if (is_named)
-        FuncState.initWithName(allocator, arity, target.scope_depth, form.items[1].symbol.name)
-    else
-        FuncState.init(allocator, arity, target.scope_depth);
+    var func_state = try FuncState.init(
+        allocator,
+        target.gc,
+        if (is_named) form.items[1].symbol.name else null,
+        arity,
+        target.scope_depth,
+    );
 
     defer func_state.deinit();
 
@@ -255,12 +250,7 @@ fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
 
     try func_state.addOp(.ret, return_line);
 
-    const func = try allocator.create(Func);
-    errdefer allocator.destroy(func);
-
-    func.* = try func_state.build(allocator);
-    errdefer func.deinit(allocator);
-
+    const func = try func_state.build();
     const cidx = try target.addConstant(.{ .object = &func.obj });
     try target.addOpWithByte(.load_constant, cidx, form.line);
 }
@@ -520,6 +510,7 @@ fn argCount(form: Node.List) CompileError!u8 {
 
 const FuncState = struct {
     allocator: Allocator,
+    gc: *Gc,
     name: ?[]const u8 = null,
     arity: u8,
     scope_depth: u16,
@@ -529,7 +520,7 @@ const FuncState = struct {
     lines: ArrayList(u32) = .{},
     locals: ArrayList(Local),
 
-    fn init(allocator: Allocator, arity: u8, scope_depth: u16) Allocator.Error!FuncState {
+    fn init(allocator: Allocator, gc: *Gc, name: ?[]const u8, arity: u8, scope_depth: u16) Allocator.Error!FuncState {
         var locals: ArrayList(Local) = .{};
 
         // Slot 0 of a call frame will always refer to the currently called
@@ -538,36 +529,34 @@ const FuncState = struct {
 
         return .{
             .allocator = allocator,
+            .gc = gc,
+            .name = name,
             .arity = arity,
             .scope_depth = scope_depth,
             .locals = locals,
         };
     }
 
-    fn initWithName(allocator: Allocator, arity: u8, scope_depth: u16, name: []const u8) Allocator.Error!FuncState {
-        var self = try FuncState.init(allocator, arity, scope_depth);
-        self.name = try allocator.dupe(u8, name);
-        return self;
-    }
-
     fn deinit(self: *FuncState) void {
-        // build() empties the ArrayLists, so if build() succeeds, deinit() operates on empty lists.
-        if (self.name) |name| self.allocator.free(name);
-        for (self.constants.items) |constant| constant.deinit(self.allocator);
+        // Constants may contain object pointers owned by the GC, we free the
+        // ArrayList but not the objects
         self.constants.deinit(self.allocator);
         self.code.deinit(self.allocator);
         self.lines.deinit(self.allocator);
         self.locals.deinit(self.allocator);
     }
 
-    fn build(self: *FuncState, allocator: Allocator) Allocator.Error!Func {
-        return Func{
-            .name = if (self.name) |name| try allocator.dupe(u8, name) else null,
-            .arity = self.arity,
-            .constants = try self.constants.toOwnedSlice(allocator),
-            .code = try self.code.toOwnedSlice(allocator),
-            .lines = try self.lines.toOwnedSlice(allocator),
-        };
+    fn build(self: *FuncState) Allocator.Error!*Func {
+        return try self.gc.create(
+            Func,
+            .{
+                self.name,
+                self.arity,
+                self.constants.items,
+                self.code.items,
+                self.lines.items,
+            },
+        );
     }
 
     fn beginScope(self: *FuncState) CompileError!void {
@@ -664,7 +653,10 @@ fn expectCompileError(input: []const u8, expected: CompileError) !void {
 
     const ast = try parser.parse();
 
-    var cpl = Compiler.init(tst.allocator);
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+
+    var cpl = Compiler.init(tst.allocator, &gc);
     try tst.expectError(expected, cpl.compile(ast));
 }
 
@@ -714,11 +706,16 @@ fn loadSnapshot(allocator: Allocator, path: []const u8) !?[]const u8 {
 }
 
 fn createSnapshot(allocator: Allocator, input: []const u8, loc: SourceLocation) ![]const u8 {
-    const func = try compileSnapshot(allocator, input);
-    defer {
-        func.deinit(allocator);
-        allocator.destroy(func);
-    }
+    var parser = Parser.init(allocator, input);
+    defer parser.deinit();
+
+    const ast = try parser.parse();
+
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+
+    var cpl = Compiler.init(allocator, &gc);
+    const func = try cpl.compile(ast);
 
     var buf = Io.Writer.Allocating.init(tst.allocator);
     defer buf.deinit();
@@ -726,16 +723,6 @@ fn createSnapshot(allocator: Allocator, input: []const u8, loc: SourceLocation) 
     try renderSnapshot(&buf.writer, input, loc, func);
 
     return try buf.toOwnedSlice();
-}
-
-fn compileSnapshot(allocator: Allocator, input: []const u8) !*Func {
-    var parser = Parser.init(allocator, input);
-    defer parser.deinit();
-
-    const ast = try parser.parse();
-
-    var cpl = Compiler.init(allocator);
-    return try cpl.compile(ast);
 }
 
 fn renderSnapshot(writer: *Io.Writer, input: []const u8, loc: SourceLocation, func: *Func) !void {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
@@ -13,6 +14,8 @@ pub const Object = struct {
     };
 
     tag: Tag,
+    marked: bool = false,
+    next: ?*Object = null,
 
     pub fn deinit(self: *Object, allocator: Allocator) void {
         switch (self.tag) {
@@ -31,8 +34,10 @@ pub const Object = struct {
                 func.deinit(allocator);
                 allocator.destroy(func);
             },
-
-            else => {},
+            .node => {
+                const node = self.as(Node);
+                allocator.destroy(node);
+            },
         }
     }
 
@@ -147,9 +152,25 @@ pub const Func = struct {
     code: []const u8,
     lines: []const u32,
 
+    pub fn init(
+        allocator: Allocator,
+        name: ?[]const u8,
+        arity: u8,
+        constants: []const Value,
+        code: []const u8,
+        lines: []const u32,
+    ) Allocator.Error!Func {
+        return .{
+            .name = if (name != null) try allocator.dupe(u8, name.?) else null,
+            .arity = arity,
+            .constants = try allocator.dupe(Value, constants),
+            .code = try allocator.dupe(u8, code),
+            .lines = try allocator.dupe(u32, lines),
+        };
+    }
+
     pub fn deinit(self: *Func, allocator: Allocator) void {
         if (self.name) |name| allocator.free(name);
-        for (self.constants) |constant| constant.deinit(allocator);
         allocator.free(self.constants);
         allocator.free(self.code);
         allocator.free(self.lines);
