@@ -2,6 +2,7 @@
 pub const Op = enum {
     load_constant,   // <cidx>
     load_local,      // <sidx>
+    load_upvalue,    // <uidx>
 
     load_global,
     define_global,
@@ -39,6 +40,10 @@ pub const Op = enum {
     // Stack manipulation
     pop,
     ppop_n,          // <n>
+
+    // Closures
+    create_closure,
+    close_upvalues,  // <fidx> <upvalue_count> (<local> <index>)+
 
     // Calls
     call,            // <argc>

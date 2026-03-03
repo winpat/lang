@@ -11,6 +11,8 @@ const String = object.String;
 const Symbol = object.Symbol;
 const Func = object.Func;
 const Node = object.Node;
+const Upvalue = object.Upvalue;
+const Closure = object.Closure;
 const Value = @import("value.zig").Value;
 const VirtualMachine = @import("virtual_machine.zig").VirtualMachine;
 
@@ -55,7 +57,11 @@ pub const GarbageCollector = struct {
         const result = try tracking_allocator.create(T);
         errdefer tracking_allocator.destroy(result);
 
-        result.* = try @call(.auto, T.init, .{tracking_allocator} ++ args);
+        const init_fn = @typeInfo(@TypeOf(T.init)).@"fn";
+        const takes_allocator = init_fn.params.len > 0 and init_fn.params[0].type == Allocator;
+        const init_args = if (takes_allocator) .{tracking_allocator} ++ args else args;
+        const is_fallible = if (init_fn.return_type) |rt| @typeInfo(rt) == .error_union else false;
+        result.* = if (is_fallible) try @call(.auto, T.init, init_args) else @call(.auto, T.init, init_args);
 
         result.obj.next = self.allocated_last;
         self.allocated_last = &result.obj;
@@ -80,8 +86,16 @@ pub const GarbageCollector = struct {
             while (iter.next()) |entry|
                 try self.markValue(entry.value_ptr.*);
 
-            for (vm.frames.items) |frame|
-                try self.markObject(&frame.func.obj);
+            for (vm.frames.items) |frame| {
+                try switch (frame.callee) {
+                    .func => |func| self.markObject(&func.obj),
+                    .closure => |closure| self.markObject(&closure.obj),
+                };
+            }
+
+            var curr = vm.open_upvalues;
+            while (curr) |upvalue| : (curr = upvalue.next)
+                try self.markObject(&upvalue.obj);
         }
     }
 
@@ -116,6 +130,19 @@ pub const GarbageCollector = struct {
                 const func = obj.as(Func);
                 for (func.constants) |constant|
                     try self.markValue(constant);
+            },
+            .upvalue => {
+                const upvalue = obj.as(Upvalue);
+                if (upvalue.closed())
+                    try self.markValue(upvalue.slot);
+            },
+            .closure => {
+                const closure = obj.as(Closure);
+                try self.markObject(&closure.func.obj);
+                for (closure.upvalues) |upvalue| {
+                    if (upvalue == null) break;
+                    try self.markObject(&upvalue.?.obj);
+                }
             },
         }
     }

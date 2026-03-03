@@ -11,6 +11,8 @@ pub const Object = struct {
         string,
         symbol,
         func,
+        upvalue,
+        closure,
     };
 
     tag: Tag,
@@ -38,6 +40,14 @@ pub const Object = struct {
                 const node = self.as(Node);
                 allocator.destroy(node);
             },
+            .upvalue => {
+                allocator.destroy(self.as(Upvalue));
+            },
+            .closure => {
+                const closure = self.as(Closure);
+                closure.deinit(allocator);
+                allocator.destroy(closure);
+            },
         }
     }
 
@@ -51,6 +61,8 @@ pub const Object = struct {
             .string => String,
             .symbol => Symbol,
             .node => Node,
+            .upvalue => Upvalue,
+            .closure => Closure,
         };
     }
 
@@ -60,6 +72,8 @@ pub const Object = struct {
             .string => try writer.print("{f}", .{self.as(String)}),
             .symbol => try writer.print("{f}", .{self.as(String)}),
             .func => try writer.print("{f}", .{self.as(Func)}),
+            .upvalue => try writer.print("{f}", .{self.as(Upvalue)}),
+            .closure => try writer.print("{f}", .{self.as(Closure)}),
         }
     }
 
@@ -69,7 +83,7 @@ pub const Object = struct {
         return switch (self.tag) {
             .string => self.as(String).equal(other.as(String).*),
             .symbol => self.as(Symbol).equal(other.as(Symbol).*),
-            .node, .func => false,
+            .node, .func, .upvalue, .closure => false,
         };
     }
 };
@@ -144,6 +158,8 @@ pub const Symbol = struct {
     }
 };
 
+const func_name_fallback = "*unknown*";
+
 pub const Func = struct {
     obj: Object = .{ .tag = .func },
     name: ?[]const u8 = null,
@@ -151,6 +167,7 @@ pub const Func = struct {
     constants: []const Value,
     code: []const u8,
     lines: []const u32,
+    upvalue_count: u8,
 
     pub fn init(
         allocator: Allocator,
@@ -159,6 +176,7 @@ pub const Func = struct {
         constants: []const Value,
         code: []const u8,
         lines: []const u32,
+        upvalue_count: u8,
     ) Allocator.Error!Func {
         return .{
             .name = if (name != null) try allocator.dupe(u8, name.?) else null,
@@ -166,6 +184,7 @@ pub const Func = struct {
             .constants = try allocator.dupe(Value, constants),
             .code = try allocator.dupe(u8, code),
             .lines = try allocator.dupe(u32, lines),
+            .upvalue_count = upvalue_count,
         };
     }
 
@@ -180,6 +199,50 @@ pub const Func = struct {
         if (self.name) |name|
             try writer.print("<fn {s}>", .{name})
         else
-            try writer.writeAll("<fn *unknown*>");
+            try writer.print("<fn {s}>", .{func_name_fallback});
+    }
+};
+
+pub const Upvalue = struct {
+    obj: Object = .{ .tag = .upvalue },
+    slot: Value = .{ .nil = {} },
+    location: *Value,
+    next: ?*Upvalue = null,
+
+    pub fn init(val: *Value) Upvalue {
+        return .{ .location = val };
+    }
+
+    pub fn closed(self: *const Upvalue) bool {
+        return self.location == &self.slot;
+    }
+
+    pub fn format(self: Upvalue, writer: *Io.Writer) Io.Writer.Error!void {
+        _ = self;
+        try writer.writeAll("<upvalue>");
+    }
+};
+
+pub const Closure = struct {
+    obj: Object = .{ .tag = .closure },
+    func: *Func,
+    upvalues: []?*Upvalue,
+
+    pub fn init(allocator: Allocator, func: *Func) Allocator.Error!Closure {
+        const upvalues = try allocator.alloc(?*Upvalue, func.upvalue_count);
+        @memset(upvalues, null);
+        return .{
+            .func = func,
+            .upvalues = upvalues,
+        };
+    }
+
+    pub fn deinit(self: *Closure, allocator: Allocator) void {
+        allocator.free(self.upvalues);
+    }
+
+    pub fn format(self: Closure, writer: *Io.Writer) Io.Writer.Error!void {
+        const func_name = if (self.func.name) |name| name else func_name_fallback;
+        try writer.print("<closure {s}>", .{func_name});
     }
 };

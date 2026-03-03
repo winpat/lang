@@ -12,6 +12,8 @@ const object = @import("object.zig");
 const Object = object.Object;
 const Func = object.Func;
 const Symbol = object.Symbol;
+const Upvalue = object.Upvalue;
+const Closure = object.Closure;
 const Op = @import("bytecode.zig").Op;
 const Parser = @import("parser.zig").Parser;
 const Value = @import("value.zig").Value;
@@ -24,6 +26,7 @@ pub const VirtualMachine = struct {
     globals: StringHashMap(Value) = .{},
     frames: ArrayList(CallFrame) = .{},
     stack: Stack = .{},
+    open_upvalues: ?*Upvalue = null,
 
     pub fn init(allocator: Allocator, gc: *Gc) VirtualMachine {
         return .{
@@ -48,7 +51,7 @@ pub const VirtualMachine = struct {
         // Slot 0 of the stack holds the function being called
         try stack.pushAs(.object, &callable.obj);
 
-        try frames.append(allocator, .{ .func = callable, .fp = &stack.items });
+        try frames.append(allocator, CallFrame.initFunc(callable, &stack.items));
         var frame = &frames.items[0];
 
         while (!frame.atEnd()) {
@@ -58,9 +61,15 @@ pub const VirtualMachine = struct {
                     try stack.push(frame.getConstant(cidx));
                 },
                 .load_local => {
-                    const sidx = frame.readByte();
-                    try stack.push(frame.fp[sidx]);
+                    const fidx = frame.readByte();
+                    try stack.push(frame.fp[fidx]);
                 },
+                .load_upvalue => {
+                    const uidx = frame.readByte();
+                    const upvalue = frame.callee.closure.upvalues[uidx];
+                    try stack.push(upvalue.?.location.*);
+                },
+
                 .load_global => {
                     const sym = try stack.popObjectAs(.symbol);
                     const val = globals.get(sym.slice()) orelse return RuntimeError.UnboundSymbol;
@@ -72,6 +81,26 @@ pub const VirtualMachine = struct {
                 .load_true => try stack.push(.{ .boolean = true }),
                 .load_false => try stack.push(.{ .boolean = false }),
                 .load_empty_list => try stack.push(.{ .list = .{} }),
+                .create_closure => {
+                    const cidx = frame.readByte();
+                    const val = frame.getConstant(cidx);
+                    const func = val.object.as(Func);
+
+                    const closure = try self.gc.create(Closure, .{func});
+                    try self.stack.push(.{ .object = &closure.obj });
+
+                    var i: u8 = 0;
+                    while (i < func.upvalue_count) : (i += 1) {
+                        const local = if (frame.readByte() == 1) true else false;
+                        const idx = frame.readByte();
+
+                        closure.upvalues[i] = if (local)
+                            try self.captureUpvalue(&frame.fp[idx])
+                        else
+                            frame.callee.closure.upvalues[idx];
+                    }
+                },
+                .close_upvalues => try self.closeUpvalues(&frame.fp[frame.readByte()]),
                 .define_global => {
                     const val = try stack.pop();
                     const sym = try stack.popObjectAs(.symbol);
@@ -250,25 +279,36 @@ pub const VirtualMachine = struct {
                 },
                 .call => {
                     const argc = frame.readByte();
-                    const callable_idx = stack.pos - argc - 1;
+                    const sidx = stack.pos - argc - 1;
 
-                    const val = stack.items[callable_idx];
-                    if (val != .object or val.object.tag != .func)
-                        return RuntimeError.NotCallable;
+                    const val = stack.items[sidx];
 
-                    const func = val.object.as(Func);
-                    if (func.arity != argc) return RuntimeError.UnsupportedArity;
+                    if (val != .object) return RuntimeError.NotCallable;
+                    const obj = val.object;
 
-                    try frames.append(
-                        allocator,
-                        CallFrame{ .func = func, .fp = stack.items[callable_idx..].ptr },
-                    );
-                    frame = &frames.items[frames.items.len - 1];
+                    const fptr = stack.items[sidx..].ptr;
+                    const new_frame = blk: switch (obj.tag) {
+                        .func => {
+                            const func = obj.as(Func);
+                            if (func.arity != argc) return RuntimeError.UnsupportedArity;
+                            break :blk CallFrame.initFunc(func, fptr);
+                        },
+                        .closure => {
+                            const closure = obj.as(Closure);
+                            if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
+                            break :blk CallFrame.initClosure(closure, fptr);
+                        },
+                        else => return RuntimeError.NotCallable,
+                    };
+
+                    try frames.append(allocator, new_frame);
+                    frame = &self.frames.items[self.frames.items.len - 1];
                 },
                 .ret => {
                     const result = try stack.pop();
 
                     const completed_frame = frames.pop().?;
+                    try self.closeUpvalues(&completed_frame.fp[0]);
 
                     if (frames.items.len == 0) {
                         // Pop the top-level function from slot 0
@@ -288,6 +328,39 @@ pub const VirtualMachine = struct {
         }
 
         unreachable;
+    }
+
+    fn captureUpvalue(self: *VirtualMachine, local: *Value) Allocator.Error!*Upvalue {
+        var prev: ?*Upvalue = null;
+        var curr = self.open_upvalues;
+        const upvalue: ?*Upvalue = while (curr) |upvalue| {
+            if (@intFromPtr(upvalue.location) <= @intFromPtr(local))
+                break upvalue;
+            prev = upvalue;
+            curr = upvalue.next;
+        } else null;
+
+        if (upvalue) |uv| if (uv.location == local) return uv;
+
+        var new_upvalue = try self.gc.create(Upvalue, .{local});
+        new_upvalue.next = upvalue;
+
+        if (prev) |prev_upvalue| {
+            prev_upvalue.next = new_upvalue;
+        } else {
+            self.open_upvalues = new_upvalue;
+        }
+
+        return new_upvalue;
+    }
+
+    fn closeUpvalues(self: *VirtualMachine, stack_ptr: *Value) !void {
+        while (self.open_upvalues) |upvalue| {
+            if (@intFromPtr(upvalue.location) < @intFromPtr(stack_ptr)) break;
+            upvalue.slot = upvalue.location.*;
+            upvalue.location = &upvalue.slot;
+            self.open_upvalues = upvalue.next;
+        }
     }
 };
 
@@ -348,9 +421,18 @@ const StackError = error{
 };
 
 const CallFrame = struct {
+    callee: union(enum) { func: *Func, closure: *Closure },
     func: *Func,
     fp: [*]Value,
     ip: usize = 0,
+
+    fn initFunc(func: *Func, fp: [*]Value) CallFrame {
+        return .{ .callee = .{ .func = func }, .func = func, .fp = fp };
+    }
+
+    fn initClosure(closure: *Closure, fp: [*]Value) CallFrame {
+        return .{ .callee = .{ .closure = closure }, .func = closure.func, .fp = fp };
+    }
 
     fn readOp(self: *CallFrame) Op {
         return @enumFromInt(self.readByte());
@@ -494,4 +576,53 @@ test "Eval def global" {
 
 test "Eval nested function" {
     try expectEvalTo("((fn identity (x) x) 1)", .{ .number = 1 });
+}
+
+test "Eval closure" {
+    try expectEvalTo(
+        \\(let (x 1
+        \\      add (fn add () (+ x 5)))
+        \\   (add))
+    ,
+        .{ .number = 6 },
+    );
+
+    // Closure escaping its enclosing scope
+    try expectEvalTo(
+        \\(let (make-adder (fn make-adder (x)
+        \\                   (fn add (y) (+ x y))))
+        \\  ((make-adder 5) 3))
+    , .{ .number = 8 });
+
+    // Closure over multiple variables
+    try expectEvalTo(
+        \\(let (x 10
+        \\      y 20
+        \\      f (fn f () (+ x y)))
+        \\  (f))
+    , .{ .number = 30 });
+
+    // Multiple closures sharing an upvalue
+    try expectEvalTo(
+        \\(let (x 10
+        \\      f1 (fn f1 () x)
+        \\      f2 (fn f2 () x))
+        \\  (+ (f1) (f2)))
+    , .{ .number = 20 });
+
+    // Nested closure (transitive upvalue at runtime)
+    try expectEvalTo(
+        \\(let (x 1)
+        \\  (let (middle (fn middle ()
+        \\                 (fn inner () (+ x 5))))
+        \\    ((middle))))
+    , .{ .number = 6 });
+
+    // Closure called multiple times
+    try expectEvalTo(
+        \\(let (make-fn (fn make-fn (x)
+        \\                (fn get () x)))
+        \\  (let (get-five (make-fn 5))
+        \\    (+ (get-five) (get-five))))
+    , .{ .number = 10 });
 }

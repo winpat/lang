@@ -81,6 +81,7 @@ fn disassembleOp(writer: *Io.Writer, func: *const Func, offset: usize) Disassemb
     switch (op) {
         .load_constant,
         .load_local,
+        .load_upvalue,
         .add,
         .sub,
         .mul,
@@ -91,6 +92,7 @@ fn disassembleOp(writer: *Io.Writer, func: *const Func, offset: usize) Disassemb
         .lt,
         .le,
         .ppop_n,
+        .close_upvalues,
         .call,
         => {
             const op_fmt = std.fmt.comptimePrint(
@@ -111,6 +113,36 @@ fn disassembleOp(writer: *Io.Writer, func: *const Func, offset: usize) Disassemb
             const short = (@as(u16, high) << 8) | low;
             pos += 1;
             try writer.print(op_fmt, .{ op_name, short });
+        },
+        .create_closure => {
+            const op_fmt = std.fmt.comptimePrint(
+                "{{s:<{d}}} {{}}",
+                .{inst_repr_len_max + 2},
+            );
+
+            pos += 1;
+            const cidx = code[pos];
+
+            try writer.print(op_fmt, .{ op_name, cidx });
+
+            const upvalue_count = func.constants[cidx].object.as(Func).upvalue_count;
+
+            if (upvalue_count > 0) {
+                for (0..upvalue_count) |_| {
+                    try writer.writeByte('\n');
+
+                    pos += 1;
+                    const local = if (code[pos] == 1) "local" else "upvalue";
+
+                    pos += 1;
+                    const upvalue_idx = code[pos];
+
+                    try writer.print(
+                        "               |  {s:>2}   {d}",
+                        .{ local, upvalue_idx },
+                    );
+                }
+            }
         },
         .load_nil,
         .load_true,

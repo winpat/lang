@@ -41,7 +41,7 @@ pub const Compiler = struct {
         self.gc.disable();
         defer self.gc.enable();
 
-        var target = try FuncState.init(self.allocator, self.gc, "*main*", 0, 0);
+        var target = try FuncState.init(self.allocator, self.gc, "*main*", 0, 0, null);
         defer target.deinit();
 
         for (ast.nodes) |node|
@@ -68,6 +68,7 @@ pub const CompileError = error{
     JumpOffsetTooLarge,
     ConstantPoolExceeded,
     LocalPoolExceeded,
+    UpvaluePoolExceeded,
     DuplicateLocal,
     MaxScopeDepthExceeded,
     TooManyArguments,
@@ -154,6 +155,9 @@ fn emitSymbolLookup(target: *FuncState, node: Node.Symbol) CompileError!void {
     if (target.resolveLocal(node.name)) |idx|
         return try target.addOpWithByte(.load_local, idx, node.line);
 
+    if (try target.resolveUpvalue(node.name)) |idx|
+        return try target.addOpWithByte(.load_upvalue, idx, node.line);
+
     try emitSymbol(target, node);
     try target.addOp(.load_global, node.line);
 }
@@ -232,6 +236,7 @@ fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
         if (is_named) form.items[1].symbol.name else null,
         arity,
         target.scope_depth,
+        target,
     );
 
     defer func_state.deinit();
@@ -252,7 +257,15 @@ fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
 
     const func = try func_state.build();
     const cidx = try target.addConstant(.{ .object = &func.obj });
-    try target.addOpWithByte(.load_constant, cidx, form.line);
+
+    const upvalues = func_state.upvalues.items;
+    if (upvalues.len > 0) {
+        try target.addOpWithByte(.create_closure, cidx, form.line);
+        for (upvalues) |upvalue| {
+            try target.addByte(if (upvalue.local) 1 else 0, form.line);
+            try target.addByte(upvalue.index, form.line);
+        }
+    } else try target.addOpWithByte(.load_constant, cidx, form.line);
 }
 
 fn emitAdd(target: *FuncState, form: Node.List) CompileError!void {
@@ -519,8 +532,10 @@ const FuncState = struct {
     // TODO Encode line information more memory efficiently (e.g. run length)
     lines: ArrayList(u32) = .{},
     locals: ArrayList(Local),
+    upvalues: ArrayList(Upvalue) = .{},
+    enclosing_func: ?*FuncState = null,
 
-    fn init(allocator: Allocator, gc: *Gc, name: ?[]const u8, arity: u8, scope_depth: u16) Allocator.Error!FuncState {
+    fn init(allocator: Allocator, gc: *Gc, name: ?[]const u8, arity: u8, scope_depth: u16, enclosing_func: ?*FuncState) Allocator.Error!FuncState {
         var locals: ArrayList(Local) = .{};
 
         // Slot 0 of a call frame will always refer to the currently called
@@ -534,6 +549,7 @@ const FuncState = struct {
             .arity = arity,
             .scope_depth = scope_depth,
             .locals = locals,
+            .enclosing_func = enclosing_func,
         };
     }
 
@@ -544,6 +560,7 @@ const FuncState = struct {
         self.code.deinit(self.allocator);
         self.lines.deinit(self.allocator);
         self.locals.deinit(self.allocator);
+        self.upvalues.deinit(self.allocator);
     }
 
     fn build(self: *FuncState) Allocator.Error!*Func {
@@ -555,6 +572,7 @@ const FuncState = struct {
                 self.constants.items,
                 self.code.items,
                 self.lines.items,
+                @as(u8, @intCast(self.upvalues.items.len)),
             },
         );
     }
@@ -571,11 +589,16 @@ const FuncState = struct {
 
         var locals = &self.locals;
         var n: u8 = 0;
-        var i = locals.items.len;
+        var captured_idx_min: ?u8 = null;
+        var i: u8 = @intCast(locals.items.len);
         while (i > 0 and locals.items[i - 1].depth > self.scope_depth) : (i -= 1) {
-            _ = locals.pop() orelse unreachable;
+            const local = locals.pop() orelse unreachable;
+            if (local.captured) captured_idx_min = i - 1;
             n += 1;
         }
+
+        if (captured_idx_min) |fidx|
+            try self.addOpWithByte(.close_upvalues, fidx, line);
 
         if (n > 0)
             try self.addOpWithByte(.ppop_n, n, line);
@@ -592,6 +615,12 @@ const FuncState = struct {
     fn addOp(self: *FuncState, op: Op, line: u32) Allocator.Error!void {
         const allocator = self.allocator;
         try self.code.append(allocator, @intFromEnum(op));
+        try self.lines.append(allocator, line);
+    }
+
+    fn addByte(self: *FuncState, byte: u8, line: u32) Allocator.Error!void {
+        const allocator = self.allocator;
+        try self.code.append(allocator, byte);
         try self.lines.append(allocator, line);
     }
 
@@ -640,11 +669,59 @@ const FuncState = struct {
             if (mem.eql(u8, local.name, name)) break idx;
         } else null;
     }
+
+    fn resolveUpvalue(self: *FuncState, name: []const u8) CompileError!?u8 {
+        const enclosing = self.enclosing_func orelse return null;
+
+        if (enclosing.resolveLocal(name)) |fidx| {
+            enclosing.locals.items[fidx].captured = true;
+            return try self.addUpvalue(fidx, true);
+        }
+
+        if (try enclosing.resolveUpvalue(name)) |uidx| {
+            return try self.addUpvalue(uidx, false);
+        }
+
+        return null;
+    }
+
+    fn addUpvalue(self: *FuncState, idx: u8, local: bool) CompileError!u8 {
+        var upvalues = &self.upvalues;
+        var i = upvalues.items.len;
+        while (i > 0) : (i -= 1) {
+            const upvalue = upvalues.items[i - 1];
+            if (upvalue.index == idx and upvalue.local == local)
+                return @intCast(i - 1);
+        }
+
+        if (upvalues.items.len >= std.math.maxInt(u8))
+            return CompileError.UpvaluePoolExceeded;
+
+        try upvalues.append(self.allocator, .{ .index = idx, .local = local });
+        return @intCast(upvalues.items.len - 1);
+    }
 };
 
 const Local = struct {
     name: []const u8,
     depth: u16,
+    captured: bool = false,
+};
+
+const Upvalue = struct {
+    /// local == true: Upvalue refers to a value in the directly enclosing
+    /// function. Therefore idx points to the frame slot holding the enclosed
+    /// value of the parent call.
+    ///
+    /// local == false: Upvalue points to a value of an outer function
+    /// definition. nEnclosing functions are automatically also promoted to be
+    /// closures storing transitive upvalue to make the enclosed value
+    /// accessible at runtime.
+    local: bool,
+
+    /// local == true: frame slot of the closed over value in the parent call frame.
+    /// is_false == false: position of the transitive upvalue in the surrounding closure.
+    index: u8,
 };
 
 fn expectCompileError(input: []const u8, expected: CompileError) !void {
@@ -852,4 +929,25 @@ test "Compile fn form" {
 
 test "Compile function call" {
     try expectDisasmSnapshot("call_add_five", @src(), "((fn add (x) (+ x 5)) 1)");
+}
+
+test "Compile closure" {
+    try expectDisasmSnapshot(
+        "closure_local_upvalue",
+        @src(),
+        \\(let (x 1)
+        \\  (fn add ()
+        \\    (+ x 5)))
+        ,
+    );
+
+    try expectDisasmSnapshot(
+        "closure_transitive_upvalue",
+        @src(),
+        \\(let (x 1)
+        \\  (fn middle ()
+        \\    (fn add ()
+        \\      (+ x 5))))
+        ,
+    );
 }

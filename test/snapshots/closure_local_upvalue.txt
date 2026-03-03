@@ -1,0 +1,25 @@
+== test.Compile closure ==
+
+(let (x 1)
+  (fn add ()
+    (+ x 5)))
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_one
+  0001    2    create_closure    0
+               |  local   1
+  0005    1    close_upvalues    1
+  0007    1    ppop_n            1
+  0009    1    ret
+ Constants
+  0   object     <fn add>
+
+==== <fn add> ====
+ Bytecode
+  0000    3    load_upvalue      0
+  0002    3    load_constant     0
+  0004    3    add               2
+  0006    3    ret
+ Constants
+  0   number     5
