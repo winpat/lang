@@ -1,0 +1,8 @@
+(defn inc (n) (+ n 1))
+(defn dec (n) (- n 1))
+
+(defn zero? (n) (= n 0))
+(defn pos? (n) (> n 0))
+(defn neg? (n) (< n 0))
+
+(defn empty? (coll) (= (count coll) 0))

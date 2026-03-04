@@ -21,7 +21,7 @@ pub const Interpreter = struct {
     gc: *Gc,
     vm: *Vm,
 
-    pub fn init(allocator: Allocator) Allocator.Error!Interpreter {
+    pub fn init(allocator: Allocator) LangError!Interpreter {
         const gc = try allocator.create(Gc);
         errdefer allocator.destroy(gc);
 
@@ -42,6 +42,7 @@ pub const Interpreter = struct {
             .vm = vm,
         };
         try self.registerBuiltins();
+        try self.loadPrelude();
 
         return self;
     }
@@ -70,6 +71,11 @@ pub const Interpreter = struct {
             try self.vm.defineGlobal(func.name, .{ .object = &native_func.obj });
         }
     }
+
+    fn loadPrelude(self: *Interpreter) LangError!void {
+        const prelude = @embedFile("lib/core.lang");
+        _ = try self.run(prelude);
+    }
 };
 
 pub const LangError = ParseError || CompileError || RuntimeError;
@@ -88,4 +94,12 @@ test "Interpreter run builtin" {
 
     const result = try interpreter.run("(nil? nil)");
     try tst.expectEqual(Value{ .boolean = true }, result);
+}
+
+test "Interpreter run prelude function" {
+    var interpreter = try Interpreter.init(tst.allocator);
+    defer interpreter.deinit();
+
+    const result = try interpreter.run("(inc 1)");
+    try tst.expectEqual(Value{ .number = 2 }, result);
 }
