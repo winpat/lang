@@ -12,6 +12,7 @@ const Gc = @import("garbage_collector.zig").GarbageCollector;
 const object = @import("object.zig");
 const Object = object.Object;
 const Func = object.Func;
+const NativeFunc = object.NativeFunc;
 const Symbol = object.Symbol;
 const Upvalue = object.Upvalue;
 const Closure = object.Closure;
@@ -105,21 +106,7 @@ pub const VirtualMachine = struct {
                 .define_global => {
                     const val = try stack.pop();
                     const sym = try stack.popObjectAs(.symbol);
-
-                    const name = try allocator.dupe(u8, sym.slice());
-                    errdefer allocator.free(name);
-
-                    const result = try globals.getOrPut(allocator, name);
-
-                    if (result.found_existing) {
-                        allocator.free(result.key_ptr.*);
-                        result.key_ptr.* = name;
-                    } else {
-                        result.key_ptr.* = name;
-                    }
-
-                    result.value_ptr.* = val;
-
+                    try self.defineGlobal(sym.slice(), val);
                     try stack.pushAs(.nil, {});
                 },
                 .add => {
@@ -288,22 +275,29 @@ pub const VirtualMachine = struct {
                     const obj = val.object;
 
                     const frame_ptr = stack.items[sidx..].ptr;
-                    const new_frame = blk: switch (obj.tag) {
+                    switch (obj.tag) {
                         .func => {
                             const func = obj.as(Func);
                             if (func.arity != argc) return RuntimeError.UnsupportedArity;
-                            break :blk CallFrame.initFunc(func, frame_ptr);
+                            try frames.append(allocator, CallFrame.initFunc(func, frame_ptr));
+                            frame = &self.frames.items[self.frames.items.len - 1];
                         },
                         .closure => {
                             const closure = obj.as(Closure);
                             if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
-                            break :blk CallFrame.initClosure(closure, frame_ptr);
+                            try frames.append(allocator, CallFrame.initClosure(closure, frame_ptr));
+                            frame = &self.frames.items[self.frames.items.len - 1];
+                        },
+                        .native_func => {
+                            const native_func = obj.as(NativeFunc);
+                            const args = stack.items[stack.pos - argc .. stack.pos];
+                            const ctx = NativeFunc.Context{ .gc = self.gc };
+                            const result = try native_func.impl(ctx, args);
+                            stack.pos = sidx;
+                            try stack.push(result);
                         },
                         else => return RuntimeError.NotCallable,
-                    };
-
-                    try frames.append(allocator, new_frame);
-                    frame = &self.frames.items[self.frames.items.len - 1];
+                    }
                 },
                 .tail_call => {
                     const argc = frame.readByte();
@@ -328,16 +322,30 @@ pub const VirtualMachine = struct {
                             if (func.arity != argc) return RuntimeError.UnsupportedArity;
                             frame.callee = .{ .func = func };
                             frame.func = func;
+                            frame.ip = 0;
                         },
                         .closure => {
                             const closure = obj.as(Closure);
                             if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
                             frame.callee = .{ .closure = closure };
                             frame.func = closure.func;
+                            frame.ip = 0;
+                        },
+                        .native_func => {
+                            const native_func = obj.as(NativeFunc);
+                            const args = stack.items[stack.pos - argc .. stack.pos];
+                            const ctx = NativeFunc.Context{ .gc = self.gc };
+                            const result = try native_func.impl(ctx, args);
+                            const frame_base = frame.fp - &stack.items;
+                            _ = frames.pop();
+                            stack.pos = frame_base;
+                            if (frames.items.len == 0) return result;
+                            try stack.push(result);
+                            frame = &frames.items[frames.items.len - 1];
+                            continue;
                         },
                         else => return RuntimeError.NotCallable,
                     }
-                    frame.ip = 0;
                 },
                 .ret => {
                     const result = try stack.pop();
@@ -360,6 +368,17 @@ pub const VirtualMachine = struct {
         }
 
         unreachable;
+    }
+
+    pub fn defineGlobal(self: *VirtualMachine, name: []const u8, val: Value) Allocator.Error!void {
+        const allocator = self.allocator;
+        const result = try self.globals.getOrPut(allocator, name);
+
+        if (result.found_existing)
+            allocator.free(result.key_ptr.*);
+
+        result.key_ptr.* = try allocator.dupe(u8, name);
+        result.value_ptr.* = val;
     }
 
     fn captureUpvalue(self: *VirtualMachine, local: *Value) Allocator.Error!*Upvalue {

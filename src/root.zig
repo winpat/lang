@@ -1,3 +1,4 @@
+pub const builtin = @import("builtin.zig");
 pub const compiler = @import("compiler.zig");
 pub const disassembler = @import("disassembler.zig");
 pub const garbage_collector = @import("garbage_collector.zig");

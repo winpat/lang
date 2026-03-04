@@ -3,6 +3,8 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const Io = std.Io;
 
+const Gc = @import("garbage_collector.zig").GarbageCollector;
+const RuntimeError = @import("virtual_machine.zig").RuntimeError;
 const Value = @import("value.zig").Value;
 
 pub const Object = struct {
@@ -11,6 +13,7 @@ pub const Object = struct {
         string,
         symbol,
         func,
+        native_func,
         upvalue,
         closure,
     };
@@ -36,6 +39,10 @@ pub const Object = struct {
                 func.deinit(allocator);
                 allocator.destroy(func);
             },
+            .native_func => {
+                const native_func = self.as(NativeFunc);
+                allocator.destroy(native_func);
+            },
             .node => {
                 const node = self.as(Node);
                 allocator.destroy(node);
@@ -58,6 +65,7 @@ pub const Object = struct {
     pub fn typeByTag(tag: Tag) type {
         return switch (tag) {
             .func => Func,
+            .native_func => NativeFunc,
             .string => String,
             .symbol => Symbol,
             .node => Node,
@@ -72,6 +80,7 @@ pub const Object = struct {
             .string => try writer.print("{f}", .{self.as(String)}),
             .symbol => try writer.print("{f}", .{self.as(String)}),
             .func => try writer.print("{f}", .{self.as(Func)}),
+            .native_func => try writer.print("{f}", .{self.as(NativeFunc)}),
             .upvalue => try writer.print("{f}", .{self.as(Upvalue)}),
             .closure => try writer.print("{f}", .{self.as(Closure)}),
         }
@@ -83,7 +92,7 @@ pub const Object = struct {
         return switch (self.tag) {
             .string => self.as(String).equal(other.as(String).*),
             .symbol => self.as(Symbol).equal(other.as(Symbol).*),
-            .node, .func, .upvalue, .closure => false,
+            .node, .func, .native_func, .upvalue, .closure => false,
         };
     }
 };
@@ -92,6 +101,10 @@ pub const Node = struct {
     obj: Object = .{ .tag = .node },
     value: Value,
     next: ?*Node = null,
+
+    pub fn init(val: Value, next: ?*Node) Allocator.Error!Node {
+        return .{ .value = val, .next = next };
+    }
 
     pub fn equal(self: Node, other: Node) bool {
         return self.value.equal(other.value);
@@ -200,6 +213,22 @@ pub const Func = struct {
             try writer.print("<fn {s}>", .{name})
         else
             try writer.print("<fn {s}>", .{func_name_fallback});
+    }
+};
+
+pub const NativeFunc = struct {
+    obj: Object = .{ .tag = .native_func },
+    name: []const u8,
+    impl: ImplPtr,
+    pub const ImplPtr = *const fn (ctx: Context, args: []const Value) RuntimeError!Value;
+    pub const Context = struct { gc: *Gc };
+
+    pub fn init(name: []const u8, impl: ImplPtr) NativeFunc {
+        return .{ .name = name, .impl = impl };
+    }
+
+    pub fn format(self: *const NativeFunc, writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.print("<native fn {s}>", .{self.name});
     }
 };
 

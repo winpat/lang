@@ -2,10 +2,12 @@ const std = @import("std");
 const tst = std.testing;
 const Allocator = std.mem.Allocator;
 
+const builtin = @import("builtin.zig");
 const compile = @import("compiler.zig");
 const Compiler = compile.Compiler;
 const CompileError = compile.CompileError;
 const Gc = @import("garbage_collector.zig").GarbageCollector;
+const NativeFunc = @import("object.zig").NativeFunc;
 const parse = @import("parser.zig");
 const Parser = parse.Parser;
 const ParseError = parse.ParseError;
@@ -34,11 +36,14 @@ pub const Interpreter = struct {
 
         gc.vm = vm;
 
-        return .{
+        var self = Interpreter{
             .allocator = allocator,
             .gc = gc,
             .vm = vm,
         };
+        try self.registerBuiltins();
+
+        return self;
     }
 
     pub fn deinit(self: *Interpreter) void {
@@ -58,6 +63,13 @@ pub const Interpreter = struct {
 
         return try self.vm.run(func);
     }
+
+    fn registerBuiltins(self: *Interpreter) Allocator.Error!void {
+        for (builtin.funcs) |func| {
+            const native_func = try self.gc.create(NativeFunc, .{ func.name, func.impl });
+            try self.vm.defineGlobal(func.name, .{ .object = &native_func.obj });
+        }
+    }
 };
 
 pub const LangError = ParseError || CompileError || RuntimeError;
@@ -68,4 +80,12 @@ test "Interpreter run expression" {
 
     const result = try interpreter.run("(+ 41 1)");
     try tst.expectEqual(Value{ .number = 42 }, result);
+}
+
+test "Interpreter run builtin" {
+    var interpreter = try Interpreter.init(tst.allocator);
+    defer interpreter.deinit();
+
+    const result = try interpreter.run("(nil? nil)");
+    try tst.expectEqual(Value{ .boolean = true }, result);
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const tst = std.testing;
+const meta = std.meta;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -13,6 +14,8 @@ pub const Value = union(enum) {
     number: Number,
     list: List,
     object: *Object,
+
+    pub const Tag = meta.Tag(Value);
 
     pub fn deinit(self: Value, allocator: Allocator) void {
         switch (self) {
@@ -50,9 +53,9 @@ pub const Value = union(enum) {
     }
 };
 
-const Nil = void;
-const Boolean = bool;
-const Number = f64;
+pub const Nil = void;
+pub const Boolean = bool;
+pub const Number = f64;
 
 pub const List = struct {
     head: ?*Node = null,

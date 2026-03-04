@@ -78,9 +78,9 @@ pub const CompileError = error{
     TooManyArguments,
 } || Allocator.Error;
 
-const Builtin = *const fn (target: *FuncState, form: Node.List) CompileError!void;
+const SpecialForm = *const fn (target: *FuncState, form: Node.List) CompileError!void;
 
-const builtins = StaticStringMap(Builtin).initComptime(
+const special_forms = StaticStringMap(SpecialForm).initComptime(
     .{
         .{ "+", emitAdd },
         .{ "-", emitSubtract },
@@ -97,9 +97,9 @@ const builtins = StaticStringMap(Builtin).initComptime(
     },
 );
 
-const TcBuiltin = *const fn (target: *FuncState, form: Node.List, tail: bool) CompileError!void;
+const TcSpecialForm = *const fn (target: *FuncState, form: Node.List, tail: bool) CompileError!void;
 
-const tc_builtins = StaticStringMap(TcBuiltin).initComptime(
+const tc_special_forms = StaticStringMap(TcSpecialForm).initComptime(
     .{
         .{ "and", emitAnd },
         .{ "or", emitOr },
@@ -212,13 +212,13 @@ fn emitForm(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     const head = form.items[0];
     switch (head) {
         .symbol => |sym| {
-            if (builtins.get(sym.name)) |builtin| {
-                return try builtin(target, form);
-            } else if (tc_builtins.get(sym.name)) |tc_builtin| {
-                return try tc_builtin(target, form, tail);
-            } else {
-                try emitSymbolLookup(target, sym);
-            }
+            if (special_forms.get(sym.name)) |special_form|
+                return try special_form(target, form);
+
+            if (tc_special_forms.get(sym.name)) |tc_special_form|
+                return try tc_special_form(target, form, tail);
+
+            try emitSymbolLookup(target, sym);
         },
         .list => |list| try emitForm(target, list, false),
         else => return CompileError.InvalidForm,

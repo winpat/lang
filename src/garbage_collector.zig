@@ -119,7 +119,7 @@ pub const GarbageCollector = struct {
 
     fn blackenObject(self: *GarbageCollector, obj: *Object) Allocator.Error!void {
         switch (obj.tag) {
-            .string, .symbol => {},
+            .string, .symbol, .native_func => {},
             .node => {
                 const node = obj.as(Node);
                 try self.markValue(node.value);
