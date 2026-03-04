@@ -6,8 +6,9 @@ map map
  Bytecode
   0000    1    load_constant     0
   0002    1    load_global
-  0003    1    load_constant     0
-  0005    1    load_global
-  0006    1    ret
+  0003    1    pop
+  0004    1    load_constant     0
+  0006    1    load_global
+  0007    1    ret
  Constants
   0   object     map

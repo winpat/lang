@@ -47,6 +47,8 @@ pub const Op = enum {
 
     // Calls
     call,            // <argc>
+    tail_call,       // <argc>
+    
     ret,
 };
 // zig fmt: on

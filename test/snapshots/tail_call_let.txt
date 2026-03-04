@@ -1,0 +1,33 @@
+== test.Compile tail call ==
+
+(def add (fn (a b) (+ a b)))
+(let (x 1 y 2) nil (add x y))
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    load_constant     1
+  0004    1    define_global
+  0005    2    pop
+  0006    2    load_one
+  0007    2    load_constant     2
+  0009    2    load_nil
+  0010    2    pop
+  0011    2    load_constant     0
+  0013    2    load_global
+  0014    2    load_local        1
+  0016    2    load_local        2
+  0018    2    tail_call         2
+  0020    2    ppop_n            2
+  0022    2    ret
+ Constants
+  0   object     add
+  1   object     <fn *unknown*>
+  2   number     2
+
+==== <fn *unknown*> ====
+ Bytecode
+  0000    1    load_local        1
+  0002    1    load_local        2
+  0004    1    add               2
+  0006    1    ret

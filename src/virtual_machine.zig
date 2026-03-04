@@ -1,5 +1,6 @@
 const std = @import("std");
 const tst = std.testing;
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const meta = std.meta;
 const Tag = meta.Tag;
@@ -286,17 +287,17 @@ pub const VirtualMachine = struct {
                     if (val != .object) return RuntimeError.NotCallable;
                     const obj = val.object;
 
-                    const fptr = stack.items[sidx..].ptr;
+                    const frame_ptr = stack.items[sidx..].ptr;
                     const new_frame = blk: switch (obj.tag) {
                         .func => {
                             const func = obj.as(Func);
                             if (func.arity != argc) return RuntimeError.UnsupportedArity;
-                            break :blk CallFrame.initFunc(func, fptr);
+                            break :blk CallFrame.initFunc(func, frame_ptr);
                         },
                         .closure => {
                             const closure = obj.as(Closure);
                             if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
-                            break :blk CallFrame.initClosure(closure, fptr);
+                            break :blk CallFrame.initClosure(closure, frame_ptr);
                         },
                         else => return RuntimeError.NotCallable,
                     };
@@ -304,21 +305,52 @@ pub const VirtualMachine = struct {
                     try frames.append(allocator, new_frame);
                     frame = &self.frames.items[self.frames.items.len - 1];
                 },
+                .tail_call => {
+                    const argc = frame.readByte();
+                    const sidx = stack.pos - argc - 1;
+
+                    const val = stack.items[sidx];
+
+                    if (val != .object) return RuntimeError.NotCallable;
+                    const obj = val.object;
+
+                    try self.closeUpvalues(&frame.fp[0]);
+
+                    const src = stack.items[sidx .. sidx + argc + 1];
+                    for (src, 0..) |v, i| frame.fp[i] = v;
+
+                    const base = frame.fp - &stack.items;
+                    stack.pos = base + argc + 1;
+
+                    switch (obj.tag) {
+                        .func => {
+                            const func = obj.as(Func);
+                            if (func.arity != argc) return RuntimeError.UnsupportedArity;
+                            frame.callee = .{ .func = func };
+                            frame.func = func;
+                        },
+                        .closure => {
+                            const closure = obj.as(Closure);
+                            if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
+                            frame.callee = .{ .closure = closure };
+                            frame.func = closure.func;
+                        },
+                        else => return RuntimeError.NotCallable,
+                    }
+                    frame.ip = 0;
+                },
                 .ret => {
                     const result = try stack.pop();
 
                     const completed_frame = frames.pop().?;
                     try self.closeUpvalues(&completed_frame.fp[0]);
 
-                    if (frames.items.len == 0) {
-                        // Pop the top-level function from slot 0
-                        _ = try stack.popObjectAs(.func);
-                        return result;
-                    }
-
                     const stack_base_ptr = &stack.items;
                     const frame_ptr = completed_frame.fp;
                     self.stack.pos = frame_ptr - stack_base_ptr;
+
+                    if (frames.items.len == 0)
+                        return result;
 
                     try stack.push(result);
 
@@ -625,4 +657,11 @@ test "Eval closure" {
         \\  (let (get-five (make-fn 5))
         \\    (+ (get-five) (get-five))))
     , .{ .number = 10 });
+}
+
+test "Tail call" {
+    try expectEvalTo(
+        \\(def count-down (fn count-down (n) (if (= n 0) 0 (count-down (- n 1)))))
+        \\(count-down 100000)
+    , .{ .number = 0 });
 }

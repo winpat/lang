@@ -38,14 +38,17 @@ pub const Compiler = struct {
     }
 
     pub fn compile(self: *Compiler, ast: Ast) CompileError!*Func {
+        if (ast.nodes.len == 0)
+            return CompileError.EmptyAst;
+
         self.gc.disable();
         defer self.gc.enable();
 
         var target = try FuncState.init(self.allocator, self.gc, "*main*", 0, 0, null);
         defer target.deinit();
 
-        for (ast.nodes) |node|
-            try emitExpr(&target, node);
+        const line_first_expr = ast.nodes[0].getLine();
+        try emitBlock(&target, ast.nodes, line_first_expr, true);
 
         const return_line = if (ast.nodes.len > 0)
             ast.nodes[ast.nodes.len - 1].getLine()
@@ -59,6 +62,7 @@ pub const Compiler = struct {
 };
 
 pub const CompileError = error{
+    EmptyAst,
     UnknownSymbol,
     InvalidForm,
     InvalidLetForm,
@@ -88,24 +92,31 @@ const builtins = StaticStringMap(Builtin).initComptime(
         .{ "<", emitLessThan },
         .{ "<=", emitLessThanEqual },
         .{ "not", emitNot },
-        .{ "and", emitAnd },
-        .{ "or", emitOr },
-        .{ "if", emitIf },
-        .{ "do", emitDo },
-        .{ "let", emitLet },
         .{ "def", emitDef },
         .{ "fn", emitFunc },
     },
 );
 
-fn emitExpr(target: *FuncState, node: Node) CompileError!void {
+const TcBuiltin = *const fn (target: *FuncState, form: Node.List, tail: bool) CompileError!void;
+
+const tc_builtins = StaticStringMap(TcBuiltin).initComptime(
+    .{
+        .{ "and", emitAnd },
+        .{ "or", emitOr },
+        .{ "if", emitIf },
+        .{ "do", emitDo },
+        .{ "let", emitLet },
+    },
+);
+
+fn emitExpr(target: *FuncState, node: Node, tail: bool) CompileError!void {
     try switch (node) {
         .number => |number| emitNumber(target, number),
         .boolean => |boolean| emitBoolean(target, boolean),
         .nil => |nil| emitNil(target, nil),
         .string => |string| emitString(target, string),
         .symbol => |symbol| emitSymbolLookup(target, symbol),
-        .list => |list| emitForm(target, list),
+        .list => |list| emitForm(target, list, tail),
     };
 }
 
@@ -194,28 +205,33 @@ fn emitConstant(target: *FuncState, constant: Value, line: u32) CompileError!voi
     try target.addOpWithByte(.load_constant, cidx, line);
 }
 
-fn emitForm(target: *FuncState, form: Node.List) CompileError!void {
+fn emitForm(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     if (form.items.len == 0)
         return try target.addOp(.load_empty_list, form.line);
 
     const head = form.items[0];
     switch (head) {
-        .symbol => |symbol| if (builtins.get(symbol.name)) |builtin| return try builtin(
-            target,
-            form,
-        ) else try emitSymbolLookup(
-            target,
-            symbol,
-        ),
-        .list => |list| try emitForm(target, list),
+        .symbol => |sym| {
+            if (builtins.get(sym.name)) |builtin| {
+                return try builtin(target, form);
+            } else if (tc_builtins.get(sym.name)) |tc_builtin| {
+                return try tc_builtin(target, form, tail);
+            } else {
+                try emitSymbolLookup(target, sym);
+            }
+        },
+        .list => |list| try emitForm(target, list, false),
         else => return CompileError.InvalidForm,
     }
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     const argc = try argCount(form);
-    try target.addOpWithByte(.call, argc, form.line);
+    try if (tail)
+        target.addOpWithByte(.tail_call, argc, form.line)
+    else
+        target.addOpWithByte(.call, argc, form.line);
 }
 
 fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
@@ -246,7 +262,7 @@ fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
         try func_state.addLocal(param.symbol.name);
     }
 
-    try emitBlock(&func_state, form.items[body_start..], form.line);
+    try emitBlock(&func_state, form.items[body_start..], form.line, true);
 
     const return_line = if (form.items.len > 0)
         form.items[form.items.len - 1].getLine()
@@ -272,7 +288,7 @@ fn emitAdd(target: *FuncState, form: Node.List) CompileError!void {
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     try switch (argc) {
         // Additive identity
@@ -285,7 +301,7 @@ fn emitSubtract(target: *FuncState, form: Node.List) CompileError!void {
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     try switch (argc) {
         0 => return CompileError.UnsupportedArity,
@@ -298,7 +314,7 @@ fn emitMultiply(target: *FuncState, form: Node.List) CompileError!void {
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     try switch (argc) {
         // Multiplicative identity
@@ -311,7 +327,7 @@ fn emitDivide(target: *FuncState, form: Node.List) CompileError!void {
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     try switch (argc) {
         0 => return CompileError.UnsupportedArity,
@@ -323,7 +339,7 @@ fn emitEqual(target: *FuncState, form: Node.List) CompileError!void {
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     switch (argc) {
         0 => return CompileError.UnsupportedArity,
@@ -351,7 +367,7 @@ fn emitComparisonOp(target: *FuncState, comptime op: Op, form: Node.List) Compil
     const argc = try argCount(form);
 
     for (form.items[1..]) |arg|
-        try emitExpr(target, arg);
+        try emitExpr(target, arg, false);
 
     switch (argc) {
         0 => return CompileError.UnsupportedArity,
@@ -364,14 +380,14 @@ fn emitNot(target: *FuncState, form: Node.List) CompileError!void {
     try switch (argc) {
         0 => target.addOp(.load_true, form.line),
         1 => {
-            try emitExpr(target, form.items[1]);
+            try emitExpr(target, form.items[1], false);
             try target.addOp(.not, form.line);
         },
         else => return CompileError.UnsupportedArity,
     };
 }
 
-fn emitAnd(target: *FuncState, form: Node.List) CompileError!void {
+fn emitAnd(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     const argc = try argCount(form);
     if (argc == 0) return try target.addOp(.load_nil, form.line);
 
@@ -379,7 +395,8 @@ fn emitAnd(target: *FuncState, form: Node.List) CompileError!void {
     var jumps = try ArrayList(usize).initCapacity(allocator, form.items.len - 1);
     defer jumps.deinit(allocator);
 
-    for (form.items[1..], 0..) |arg, idx| {
+    const args = form.items[1..];
+    for (args, 0..) |arg, idx| {
         // Don't emit jump + pop for the last operand of the form.
         if (idx > 0) {
             const jump = try emitJumpPlaceholder(target, .jmpf, form.line);
@@ -387,14 +404,15 @@ fn emitAnd(target: *FuncState, form: Node.List) CompileError!void {
             try target.addOp(.pop, form.line);
         }
 
-        try emitExpr(target, arg);
+        const is_last = idx == args.len - 1;
+        try emitExpr(target, arg, is_last and tail);
     }
 
     const dst = target.code.items.len;
     for (jumps.items) |jmp_pos| try patchJump(target, jmp_pos, dst);
 }
 
-fn emitOr(target: *FuncState, form: Node.List) CompileError!void {
+fn emitOr(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     const argc = try argCount(form);
     if (argc == 0) return try target.addOp(.load_nil, form.line);
 
@@ -402,14 +420,16 @@ fn emitOr(target: *FuncState, form: Node.List) CompileError!void {
     var jumps = try ArrayList(usize).initCapacity(allocator, form.items.len - 1);
     defer jumps.deinit(allocator);
 
-    for (form.items[1..], 0..) |arg, idx| {
+    const args = form.items[1..];
+    for (args, 0..) |arg, idx| {
         if (idx > 0) {
             const jump = try emitJumpPlaceholder(target, .jmpt, form.line);
             jumps.appendAssumeCapacity(jump);
             try target.addOp(.pop, form.line);
         }
 
-        try emitExpr(target, arg);
+        const is_last = idx == args.len - 1;
+        try emitExpr(target, arg, is_last and tail);
     }
 
     const dst = target.code.items.len;
@@ -437,43 +457,44 @@ pub fn patchJump(target: *FuncState, jmp_pos: usize, dst: usize) CompileError!vo
     target.code.items[jmp_pos + 2] = @truncate(offset >> 8);
 }
 
-fn emitIf(target: *FuncState, form: Node.List) CompileError!void {
+fn emitIf(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     if (form.items.len != 4)
         return CompileError.UnsupportedArity;
 
     // Condition.
-    try emitExpr(target, form.items[1]);
+    try emitExpr(target, form.items[1], false);
     const else_branch_jmp = try emitJumpPlaceholder(target, .jmpf, form.line);
 
     // Then branch
     try target.addOp(.pop, form.line);
-    try emitExpr(target, form.items[2]);
+    try emitExpr(target, form.items[2], tail);
     const end_jmp = try emitJumpPlaceholder(target, .jmp, form.line);
 
     // Else branch
     try patchJump(target, else_branch_jmp, target.code.items.len);
     try target.addOp(.pop, form.line);
-    try emitExpr(target, form.items[3]);
+    try emitExpr(target, form.items[3], tail);
 
     // End
     try patchJump(target, end_jmp, target.code.items.len);
 }
 
-fn emitDo(target: *FuncState, form: Node.List) CompileError!void {
-    try emitBlock(target, form.items[1..], form.line);
+fn emitDo(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
+    try emitBlock(target, form.items[1..], form.line, tail);
 }
 
-fn emitBlock(target: *FuncState, nodes: []const Node, line: u32) CompileError!void {
+fn emitBlock(target: *FuncState, nodes: []const Node, line: u32, tail: bool) CompileError!void {
     if (nodes.len == 0)
         return try target.addOp(.load_nil, line);
 
     for (nodes, 0..) |node, idx| {
         if (idx > 0) try target.addOp(.pop, node.getLine());
-        try emitExpr(target, node);
+        const is_last = idx == nodes.len - 1;
+        try emitExpr(target, node, is_last and tail);
     }
 }
 
-fn emitLet(target: *FuncState, form: Node.List) CompileError!void {
+fn emitLet(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
     try target.beginScope();
 
     if (form.items.len < 2 or form.items[1] != .list)
@@ -494,11 +515,11 @@ fn emitLet(target: *FuncState, form: Node.List) CompileError!void {
         try target.addLocal(sym.name);
 
         const rhs = binding_form.items[i + 1];
-        try emitExpr(target, rhs);
+        try emitExpr(target, rhs, false);
     }
 
     // Compile the body.
-    try emitBlock(target, form.items[2..], form.line);
+    try emitBlock(target, form.items[2..], form.line, tail);
     try target.endScope(form.line);
 }
 
@@ -510,7 +531,7 @@ fn emitDef(target: *FuncState, form: Node.List) CompileError!void {
         return CompileError.InvalidDefForm;
 
     try emitSymbol(target, form.items[1].symbol);
-    try emitExpr(target, form.items[2]);
+    try emitExpr(target, form.items[2], false);
     try target.addOp(.define_global, form.line);
 }
 
@@ -948,6 +969,48 @@ test "Compile closure" {
         \\  (fn middle ()
         \\    (fn add ()
         \\      (+ x 5))))
+        ,
+    );
+}
+
+test "Compile tail call" {
+    try expectDisasmSnapshot(
+        "tail_call_if",
+        @src(),
+        \\(def add (fn (a b) (+ a b)))
+        \\(if true (add 1 2) (add 2 2))
+        ,
+    );
+
+    try expectDisasmSnapshot(
+        "tail_call_or",
+        @src(),
+        \\(def add (fn (a b) (+ a b)))
+        \\(or nil (add 1 2))
+        ,
+    );
+
+    try expectDisasmSnapshot(
+        "tail_call_and",
+        @src(),
+        \\(def add (fn (a b) (+ a b)))
+        \\(and true (add 1 2))
+        ,
+    );
+
+    try expectDisasmSnapshot(
+        "tail_call_do",
+        @src(),
+        \\(def add (fn (a b) (+ a b)))
+        \\(do nil (add 1 2))
+        ,
+    );
+
+    try expectDisasmSnapshot(
+        "tail_call_let",
+        @src(),
+        \\(def add (fn (a b) (+ a b)))
+        \\(let (x 1 y 2) nil (add x y))
         ,
     );
 }

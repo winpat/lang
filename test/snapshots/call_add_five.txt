@@ -6,7 +6,7 @@
  Bytecode
   0000    1    load_constant     0
   0002    1    load_one
-  0003    1    call              1
+  0003    1    tail_call         1
   0005    1    ret
  Constants
   0   object     <fn add>

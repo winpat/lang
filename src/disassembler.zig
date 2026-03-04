@@ -94,6 +94,7 @@ fn disassembleOp(writer: *Io.Writer, func: *const Func, offset: usize) Disassemb
         .ppop_n,
         .close_upvalues,
         .call,
+        .tail_call,
         => {
             const op_fmt = std.fmt.comptimePrint(
                 "{{s:<{d}}} {{}}",
@@ -191,9 +192,10 @@ test "Disassemble bytecode" {
         \\  0000    1    load_one
         \\  0001    1    load_constant     0
         \\  0003    1    add               2
-        \\  0005    2    load_constant     1
-        \\  0007    2    neg
-        \\  0008    2    ret
+        \\  0005    2    pop
+        \\  0006    2    load_constant     1
+        \\  0008    2    neg
+        \\  0009    2    ret
         \\ Constants
         \\  0   number     2
         \\  1   number     -2
