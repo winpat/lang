@@ -67,6 +67,7 @@ pub const CompileError = error{
     InvalidForm,
     InvalidLetForm,
     InvalidDefForm,
+    InvalidDefnForm,
     InvalidFnForm,
     UnsupportedArity,
     JumpOffsetTooLarge,
@@ -92,8 +93,9 @@ const special_forms = StaticStringMap(SpecialForm).initComptime(
         .{ "<", emitLessThan },
         .{ "<=", emitLessThanEqual },
         .{ "not", emitNot },
+        .{ "defn", emitDefn },
         .{ "def", emitDef },
-        .{ "fn", emitFunc },
+        .{ "fn", emitFn },
     },
 );
 
@@ -232,56 +234,6 @@ fn emitForm(target: *FuncState, form: Node.List, tail: bool) CompileError!void {
         target.addOpWithByte(.tail_call, argc, form.line)
     else
         target.addOpWithByte(.call, argc, form.line);
-}
-
-fn emitFunc(target: *FuncState, form: Node.List) CompileError!void {
-    const is_named = form.items.len >= 3 and form.items[1] == .symbol and form.items[2] == .list;
-    const is_anon = form.items.len >= 2 and form.items[1] == .list;
-
-    const params_idx: usize = if (is_named) 2 else if (is_anon) 1 else return CompileError.InvalidFnForm;
-    const body_start: usize = params_idx + 1;
-
-    const allocator = target.allocator;
-
-    const params = form.items[params_idx].list.items;
-    const arity: u8 = @intCast(params.len);
-
-    var func_state = try FuncState.init(
-        allocator,
-        target.gc,
-        if (is_named) form.items[1].symbol.name else null,
-        arity,
-        target.scope_depth,
-        target,
-    );
-
-    defer func_state.deinit();
-
-    for (params) |param| {
-        if (param != .symbol) return CompileError.InvalidFnForm;
-        try func_state.addLocal(param.symbol.name);
-    }
-
-    try emitBlock(&func_state, form.items[body_start..], form.line, true);
-
-    const return_line = if (form.items.len > 0)
-        form.items[form.items.len - 1].getLine()
-    else
-        1;
-
-    try func_state.addOp(.ret, return_line);
-
-    const func = try func_state.build();
-    const cidx = try target.addConstant(.{ .object = &func.obj });
-
-    const upvalues = func_state.upvalues.items;
-    if (upvalues.len > 0) {
-        try target.addOpWithByte(.create_closure, cidx, form.line);
-        for (upvalues) |upvalue| {
-            try target.addByte(if (upvalue.local) 1 else 0, form.line);
-            try target.addByte(upvalue.index, form.line);
-        }
-    } else try target.addOpWithByte(.load_constant, cidx, form.line);
 }
 
 fn emitAdd(target: *FuncState, form: Node.List) CompileError!void {
@@ -533,6 +485,78 @@ fn emitDef(target: *FuncState, form: Node.List) CompileError!void {
     try emitSymbol(target, form.items[1].symbol);
     try emitExpr(target, form.items[2], false);
     try target.addOp(.define_global, form.line);
+}
+
+fn emitDefn(target: *FuncState, form: Node.List) CompileError!void {
+    if (form.items.len < 3) return CompileError.InvalidDefnForm;
+    if (form.items[1] != .symbol) return CompileError.InvalidDefnForm;
+    if (form.items[2] != .list) return CompileError.InvalidDefnForm;
+
+    const symbol = form.items[1].symbol;
+    try emitSymbol(target, symbol);
+
+    const name = symbol.name;
+    const params = form.items[2].list.items;
+    const body = form.items[3..];
+    try emitFunc(target, name, params, body, form.line);
+
+    try target.addOp(.define_global, form.line);
+}
+
+fn emitFn(target: *FuncState, form: Node.List) CompileError!void {
+    if (form.items.len < 2) return CompileError.InvalidFnForm;
+
+    const is_named = form.items.len >= 3 and form.items[1] == .symbol and form.items[2] == .list;
+    const is_anon = form.items[1] == .list;
+
+    const params_idx: usize = if (is_named) 2 else if (is_anon) 1 else return CompileError.InvalidFnForm;
+
+    const name = if (is_named) form.items[1].symbol.name else null;
+    const params = form.items[params_idx].list.items;
+    const body = form.items[params_idx + 1 ..];
+
+    try emitFunc(target, name, params, body, form.line);
+}
+
+fn emitFunc(target: *FuncState, name: ?[]const u8, params: []const Node, body: []const Node, line: u32) CompileError!void {
+    var func_state = try FuncState.init(
+        target.allocator,
+        target.gc,
+        name,
+        @intCast(params.len),
+        target.scope_depth,
+        target,
+    );
+    defer func_state.deinit();
+
+    for (params) |param| {
+        if (param != .symbol) return CompileError.InvalidFnForm;
+        try func_state.addLocal(param.symbol.name);
+    }
+
+    try emitBlock(&func_state, body, line, true);
+
+    const return_line = if (body.len > 0)
+        body[body.len - 1].getLine()
+    else
+        line;
+
+    try func_state.addOp(.ret, return_line);
+
+    const func = try func_state.build();
+    const cidx = try target.addConstant(.{ .object = &func.obj });
+
+    const is_closure = func_state.upvalues.items.len > 0;
+    if (is_closure) {
+        const upvalues = func_state.upvalues.items;
+        try target.addOpWithByte(.create_closure, cidx, line);
+        for (upvalues) |upvalue| {
+            try target.addByte(if (upvalue.local) 1 else 0, line);
+            try target.addByte(upvalue.index, line);
+        }
+    } else {
+        try target.addOpWithByte(.load_constant, cidx, line);
+    }
 }
 
 fn argCount(form: Node.List) CompileError!u8 {
@@ -939,6 +963,11 @@ test "Compile def form" {
     try expectCompileError("(def x)", CompileError.UnsupportedArity);
     try expectCompileError("(def 1 1)", CompileError.InvalidDefForm);
     try expectDisasmSnapshot("def", @src(), "(def x 1)");
+}
+
+test "Compile defn form" {
+    try expectCompileError("(defn)", CompileError.InvalidDefnForm);
+    try expectDisasmSnapshot("defn_double", @src(), "(defn double (x) (* x 2))");
 }
 
 test "Compile fn form" {
