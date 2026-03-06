@@ -31,7 +31,7 @@ pub const Interpreter = struct {
         const vm = try allocator.create(Vm);
         errdefer allocator.destroy(vm);
 
-        vm.* = Vm.init(allocator, gc);
+        vm.* = try Vm.init(allocator, gc);
         errdefer vm.deinit();
 
         gc.vm = vm;

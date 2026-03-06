@@ -1,5 +1,7 @@
 const std = @import("std");
+const fs = std.fs;
 const tst = std.testing;
+const Io = std.Io;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const meta = std.meta;
@@ -30,10 +32,26 @@ pub const VirtualMachine = struct {
     stack: Stack = .{},
     open_upvalues: ?*Upvalue = null,
 
-    pub fn init(allocator: Allocator, gc: *Gc) VirtualMachine {
+    stdin_reader: fs.File.Reader,
+    stdout_writer: fs.File.Writer,
+    stderr_writer: fs.File.Writer,
+
+    pub fn init(allocator: Allocator, gc: *Gc) Allocator.Error!VirtualMachine {
+        const stdin_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stdin_buf);
+
+        const stdout_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stdout_buf);
+
+        const stderr_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stderr_buf);
+
         return .{
             .allocator = allocator,
             .gc = gc,
+            .stdin_reader = fs.File.stdin().reader(stdin_buf),
+            .stdout_writer = fs.File.stdout().writer(stdout_buf),
+            .stderr_writer = fs.File.stderr().writer(stderr_buf),
         };
     }
 
@@ -42,6 +60,9 @@ pub const VirtualMachine = struct {
         while (iter.next()) |key| self.allocator.free(key.*);
         self.globals.deinit(self.allocator);
         self.frames.deinit(self.allocator);
+        self.allocator.free(self.stdin_reader.interface.buffer);
+        self.allocator.free(self.stdout_writer.interface.buffer);
+        self.allocator.free(self.stderr_writer.interface.buffer);
     }
 
     pub fn run(self: *VirtualMachine, callable: *Func) RuntimeError!Value {
@@ -291,8 +312,7 @@ pub const VirtualMachine = struct {
                         .native_func => {
                             const native_func = obj.as(NativeFunc);
                             const args = stack.items[stack.pos - argc .. stack.pos];
-                            const ctx = NativeFunc.Context{ .gc = self.gc };
-                            const result = try native_func.impl(ctx, args);
+                            const result = try native_func.impl(self.getNativeContext(), args);
                             stack.pos = sidx;
                             try stack.push(result);
                         },
@@ -334,8 +354,7 @@ pub const VirtualMachine = struct {
                         .native_func => {
                             const native_func = obj.as(NativeFunc);
                             const args = stack.items[stack.pos - argc .. stack.pos];
-                            const ctx = NativeFunc.Context{ .gc = self.gc };
-                            const result = try native_func.impl(ctx, args);
+                            const result = try native_func.impl(self.getNativeContext(), args);
                             const frame_base = frame.fp - &stack.items;
                             _ = frames.pop();
                             stack.pos = frame_base;
@@ -381,6 +400,15 @@ pub const VirtualMachine = struct {
         result.value_ptr.* = val;
     }
 
+    fn getNativeContext(self: *VirtualMachine) NativeFunc.Context {
+        return .{
+            .gc = self.gc,
+            .stdin = &self.stdin_reader.interface,
+            .stdout = &self.stdout_writer.interface,
+            .stderr = &self.stderr_writer.interface,
+        };
+    }
+
     fn captureUpvalue(self: *VirtualMachine, local: *Value) Allocator.Error!*Upvalue {
         var prev: ?*Upvalue = null;
         var curr = self.open_upvalues;
@@ -419,7 +447,7 @@ pub const RuntimeError = error{
     UnboundSymbol,
     NotCallable,
     UnsupportedArity,
-} || StackError || Allocator.Error;
+} || StackError || Allocator.Error || Io.Writer.Error || Io.Reader.Error;
 
 const Stack = struct {
     items: [stack_depth_max]Value = undefined,
@@ -529,7 +557,7 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     var compiler = Compiler.init(allocator, &gc);
     const func = try compiler.compile(ast);
 
-    var vm = VirtualMachine.init(allocator, &gc);
+    var vm = try VirtualMachine.init(allocator, &gc);
     defer vm.deinit();
     const result = try vm.run(func);
 

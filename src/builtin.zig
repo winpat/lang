@@ -1,5 +1,8 @@
 const std = @import("std");
 const tst = std.testing;
+const Allocator = std.mem.Allocator;
+const fs = std.fs;
+const Io = std.Io;
 
 const Gc = @import("garbage_collector.zig").GarbageCollector;
 const o = @import("object.zig");
@@ -35,6 +38,8 @@ pub const funcs = [_]struct { name: []const u8, impl: NativeFunc.ImplPtr }{
     // Misc
     .{ .name = "min", .impl = min },
     .{ .name = "max", .impl = max },
+    // IO
+    .{ .name = "print", .impl = print },
 };
 
 pub fn nil() Value {
@@ -338,7 +343,17 @@ fn conj(ctx: Context, args: []const Value) RuntimeError!Value {
 test "conj" {
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
-    const ctx = Context{ .gc = &gc };
+
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stdout_writer = fs.File.stdout().writer(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    };
 
     // Conj on to empty list
     {
@@ -472,7 +487,17 @@ fn concat(ctx: Context, args: []const Value) RuntimeError!Value {
 test "concat strings" {
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
-    const ctx = Context{ .gc = &gc };
+
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stdout_writer = fs.File.stdout().writer(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    };
 
     const hello = "hello";
     const world = " world";
@@ -493,7 +518,17 @@ test "concat strings" {
 test "concat lists" {
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
-    const ctx = Context{ .gc = &gc };
+
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stdout_writer = fs.File.stdout().writer(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    };
 
     // (concat) => ()
     try tst.expectEqual(empty_list(), try concat(ctx, &.{}));
@@ -523,6 +558,43 @@ test "concat lists" {
     });
 }
 
+fn print(ctx: Context, args: []const Value) RuntimeError!Value {
+    const stdout = ctx.stdout;
+    for (args, 0..) |arg, idx| {
+        if (idx > 0) try stdout.writeByte(' ');
+        try stdout.print("{f}", .{arg});
+    }
+    try stdout.writeByte('\n');
+    try stdout.flush();
+    return nil();
+}
+
+test "print" {
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    var stdout_writer = Io.Writer.Allocating.init(tst.allocator);
+    defer stdout_writer.deinit();
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.writer,
+        .stderr = &stderr_writer.interface,
+    };
+
+    const result = try print(ctx, &.{ num(1), num(2) });
+    try tst.expectEqual(nil(), result);
+
+    const output = try stdout_writer.toOwnedSlice();
+    defer tst.allocator.free(output);
+
+    try tst.expectEqualSlices(u8, "1 2\n", output);
+}
+
 const Case = struct { []const Value, RuntimeError!Value };
 
 fn expectCases(impl: NativeFunc.ImplPtr, cases: []const Case) !void {
@@ -540,7 +612,16 @@ fn expectValue(impl: NativeFunc.ImplPtr, args: []const Value, expected: Value) !
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
-    const ctx = Context{ .gc = &gc };
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stdout_writer = fs.File.stdout().writer(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    };
 
     try tst.expectEqualDeep(expected, try impl(ctx, args));
 }
@@ -549,7 +630,16 @@ fn expectRuntimeError(impl: NativeFunc.ImplPtr, args: []const Value, expected: R
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
-    const ctx = Context{ .gc = &gc };
+    var stdin_reader = fs.File.stdin().reader(&.{});
+    var stdout_writer = fs.File.stdout().writer(&.{});
+    var stderr_writer = fs.File.stderr().writer(&.{});
+
+    const ctx = Context{
+        .gc = &gc,
+        .stdin = &stdin_reader.interface,
+        .stdout = &stdout_writer.interface,
+        .stderr = &stderr_writer.interface,
+    };
 
     try tst.expectError(expected, impl(ctx, args));
 }

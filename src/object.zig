@@ -221,7 +221,12 @@ pub const NativeFunc = struct {
     name: []const u8,
     impl: ImplPtr,
     pub const ImplPtr = *const fn (ctx: Context, args: []const Value) RuntimeError!Value;
-    pub const Context = struct { gc: *Gc };
+    pub const Context = struct {
+        gc: *Gc,
+        stdin: *Io.Reader,
+        stdout: *Io.Writer,
+        stderr: *Io.Writer,
+    };
 
     pub fn init(name: []const u8, impl: ImplPtr) NativeFunc {
         return .{ .name = name, .impl = impl };
