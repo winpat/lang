@@ -83,9 +83,23 @@ pub const GarbageCollector = struct {
             for (vm.stack.items[0..vm.stack.pos]) |val|
                 try self.markValue(val);
 
-            var iter = vm.globals.iterator();
-            while (iter.next()) |entry|
-                try self.markValue(entry.value_ptr.*);
+            var mod_iter = vm.module_cache.iterator();
+            while (mod_iter.next()) |entry| {
+                const mod = entry.value_ptr.*;
+                // The GC is disabled during module compilation, after
+                // compilation has finished there should always be a module
+                // func.
+                if (mod.func) |func|
+                    try self.markObject(&func.obj)
+                else
+                    @panic("Encountered uncompiled module while marking roots.");
+            }
+
+            var global_iter = vm.globals.iterator();
+            while (global_iter.next()) |entry| {
+                const val = entry.value_ptr.*;
+                try self.markValue(val);
+            }
 
             for (vm.frames.items) |frame| {
                 try switch (frame.callee) {

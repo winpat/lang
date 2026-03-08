@@ -9,7 +9,9 @@ const Tag = meta.Tag;
 const StringHashMap = std.StringHashMapUnmanaged;
 const ArrayList = std.ArrayList;
 
-const Compiler = @import("compiler.zig").Compiler;
+const comp = @import("compiler.zig");
+const Compiler = comp.Compiler;
+const Module = comp.Module;
 const Gc = @import("garbage_collector.zig").GarbageCollector;
 const object = @import("object.zig");
 const Object = object.Object;
@@ -27,16 +29,18 @@ const stack_depth_max: usize = 256;
 pub const VirtualMachine = struct {
     allocator: Allocator,
     gc: *Gc,
+    module_cache: *StringHashMap(*Module),
     globals: StringHashMap(Value) = .{},
     frames: ArrayList(CallFrame) = .{},
     stack: Stack = .{},
     open_upvalues: ?*Upvalue = null,
     io: IoConfig,
 
-    pub fn init(allocator: Allocator, gc: *Gc) Allocator.Error!VirtualMachine {
+    pub fn init(allocator: Allocator, gc: *Gc, module_cache: *StringHashMap(*Module)) Allocator.Error!VirtualMachine {
         return .{
             .allocator = allocator,
             .gc = gc,
+            .module_cache = module_cache,
             .io = try IoConfig.init(allocator),
         };
     }
@@ -369,6 +373,23 @@ pub const VirtualMachine = struct {
 
                     frame = &frames.items[frames.items.len - 1];
                 },
+                .import => {
+                    const sym = try stack.popObjectAs(.symbol);
+                    var mod = self.module_cache.get(sym.slice()) orelse return RuntimeError.ModuleNotFound;
+
+                    // Ensure we don't import the same module multiple times.
+                    if (mod.imported) {
+                        try self.stack.pushAs(.nil, {});
+                        continue;
+                    }
+
+                    const func = mod.func orelse return RuntimeError.ModuleNotCompiled;
+                    try stack.pushAs(.object, &func.obj);
+                    const frame_ptr = stack.items[stack.pos - 1 ..].ptr;
+                    try frames.append(allocator, CallFrame.initFunc(func, frame_ptr));
+                    frame = &self.frames.items[self.frames.items.len - 1];
+                    mod.imported = true;
+                },
             }
         }
 
@@ -447,6 +468,8 @@ pub const RuntimeError = error{
     UnboundSymbol,
     NotCallable,
     UnsupportedArity,
+    ModuleNotFound,
+    ModuleNotCompiled,
 } || StackError || Allocator.Error || Io.Writer.Error || Io.Reader.Error;
 
 const Stack = struct {
@@ -602,10 +625,12 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
-    var compiler = Compiler.init(allocator, &gc);
-    const func = try compiler.compile(input);
+    var cpl = Compiler.init(allocator, &gc);
+    defer cpl.deinit();
 
-    var vm = try VirtualMachine.init(allocator, &gc);
+    const func = try cpl.compile(input);
+
+    var vm = try VirtualMachine.init(allocator, &gc, &cpl.module_cache);
     defer vm.deinit();
     const result = try vm.run(func);
 
@@ -619,10 +644,12 @@ fn expectRuntimeError(input: []const u8, expected: RuntimeError) !void {
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
-    var compiler = Compiler.init(allocator, &gc);
-    const func = try compiler.compile(input);
+    var cpl = Compiler.init(allocator, &gc);
+    defer cpl.deinit();
 
-    var vm = try VirtualMachine.init(allocator, &gc);
+    const func = try cpl.compile(input);
+
+    var vm = try VirtualMachine.init(allocator, &gc, &cpl.module_cache);
     defer vm.deinit();
 
     var stderr = Io.Writer.Allocating.init(allocator);
@@ -785,4 +812,19 @@ test "Tail call" {
         \\(def count-down (fn count-down (n) (if (= n 0) 0 (count-down (- n 1)))))
         \\(count-down 100000)
     , .{ .number = 0 });
+}
+
+test "Import module" {
+    try expectEvalTo(
+        \\(import string)
+        \\(blank? "")
+    , .{ .boolean = true });
+
+    // Module should only be imported once.
+    try expectEvalTo(
+        \\(import string)
+        \\(def blank? 42)
+        \\(import string)
+        \\blank?
+    , .{ .number = 42 });
 }

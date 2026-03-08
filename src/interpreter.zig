@@ -18,6 +18,7 @@ pub const Interpreter = struct {
     allocator: Allocator,
     gc: *Gc,
     vm: *Vm,
+    cpl: *Compiler,
 
     pub fn init(allocator: Allocator) LangError!Interpreter {
         const gc = try allocator.create(Gc);
@@ -26,10 +27,16 @@ pub const Interpreter = struct {
         gc.* = Gc.init(allocator);
         errdefer gc.deinit();
 
+        const cpl = try allocator.create(Compiler);
+        errdefer allocator.destroy(cpl);
+
+        cpl.* = Compiler.init(allocator, gc);
+        errdefer cpl.deinit();
+
         const vm = try allocator.create(Vm);
         errdefer allocator.destroy(vm);
 
-        vm.* = try Vm.init(allocator, gc);
+        vm.* = try Vm.init(allocator, gc, &cpl.module_cache);
         errdefer vm.deinit();
 
         gc.vm = vm;
@@ -37,6 +44,7 @@ pub const Interpreter = struct {
         var self = Interpreter{
             .allocator = allocator,
             .gc = gc,
+            .cpl = cpl,
             .vm = vm,
         };
         try self.registerBuiltins();
@@ -48,14 +56,14 @@ pub const Interpreter = struct {
     pub fn deinit(self: *Interpreter) void {
         self.vm.deinit();
         self.allocator.destroy(self.vm);
+        self.cpl.deinit();
+        self.allocator.destroy(self.cpl);
         self.gc.deinit();
         self.allocator.destroy(self.gc);
     }
 
     pub fn run(self: *Interpreter, input: []const u8) LangError!Value {
-        var compiler = Compiler.init(self.allocator, self.gc);
-        const func = try compiler.compile(input);
-
+        const func = try self.cpl.compile(input);
         return try self.vm.run(func);
     }
 

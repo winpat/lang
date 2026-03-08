@@ -155,6 +155,7 @@ fn disassembleOp(writer: *Io.Writer, func: *const Func, offset: usize) Disassemb
         .neg,
         .not,
         .pop,
+        .import,
         .ret,
         => {
             try writer.print("{s}", .{op_name});
@@ -178,6 +179,8 @@ test "Disassemble bytecode" {
     defer gc.deinit();
 
     var cpl = Compiler.init(tst.allocator, &gc);
+    defer cpl.deinit();
+
     const func = try cpl.compile(input);
 
     const expected =
