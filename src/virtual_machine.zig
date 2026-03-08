@@ -31,27 +31,13 @@ pub const VirtualMachine = struct {
     frames: ArrayList(CallFrame) = .{},
     stack: Stack = .{},
     open_upvalues: ?*Upvalue = null,
-
-    stdin_reader: fs.File.Reader,
-    stdout_writer: fs.File.Writer,
-    stderr_writer: fs.File.Writer,
+    io: IoConfig,
 
     pub fn init(allocator: Allocator, gc: *Gc) Allocator.Error!VirtualMachine {
-        const stdin_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stdin_buf);
-
-        const stdout_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stdout_buf);
-
-        const stderr_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stderr_buf);
-
         return .{
             .allocator = allocator,
             .gc = gc,
-            .stdin_reader = fs.File.stdin().reader(stdin_buf),
-            .stdout_writer = fs.File.stdout().writer(stdout_buf),
-            .stderr_writer = fs.File.stderr().writer(stderr_buf),
+            .io = try IoConfig.init(allocator),
         };
     }
 
@@ -60,9 +46,7 @@ pub const VirtualMachine = struct {
         while (iter.next()) |key| self.allocator.free(key.*);
         self.globals.deinit(self.allocator);
         self.frames.deinit(self.allocator);
-        self.allocator.free(self.stdin_reader.interface.buffer);
-        self.allocator.free(self.stdout_writer.interface.buffer);
-        self.allocator.free(self.stderr_writer.interface.buffer);
+        self.io.deinit(self.allocator);
     }
 
     pub fn run(self: *VirtualMachine, callable: *Func) RuntimeError!Value {
@@ -70,6 +54,8 @@ pub const VirtualMachine = struct {
         var stack = &self.stack;
         var frames = &self.frames;
         var globals = &self.globals;
+
+        errdefer self.unwindStack();
 
         // Slot 0 of the stack holds the function being called
         try stack.pushAs(.object, &callable.obj);
@@ -400,12 +386,26 @@ pub const VirtualMachine = struct {
         result.value_ptr.* = val;
     }
 
+    fn unwindStack(self: *VirtualMachine) void {
+        const stderr = self.io.stderr;
+        var i = self.frames.items.len;
+        while (i > 0) : (i -= 1) {
+            const frame = self.frames.pop() orelse @panic("Unable to unwind stack.");
+            const line = frame.func.lines[frame.ip];
+            stderr.print("[line {}] in {f}\n", .{ line, frame.func }) catch @panic("Unable to unwind stack.");
+        }
+        stderr.flush() catch @panic("Unable to unwind stack.");
+
+        try self.closeUpvalues(&self.stack.items[0]);
+        self.stack.pos = 0;
+    }
+
     fn getNativeContext(self: *VirtualMachine) NativeFunc.Context {
         return .{
             .gc = self.gc,
-            .stdin = &self.stdin_reader.interface,
-            .stdout = &self.stdout_writer.interface,
-            .stderr = &self.stderr_writer.interface,
+            .stdin = self.io.stdin,
+            .stdout = self.io.stdout,
+            .stderr = self.io.stderr,
         };
     }
 
@@ -544,6 +544,58 @@ const CallFrame = struct {
     }
 };
 
+const IoConfig = struct {
+    stdin_reader: *fs.File.Reader,
+    stdin: *Io.Reader,
+
+    stdout_writer: *fs.File.Writer,
+    stdout: *Io.Writer,
+
+    stderr_writer: *fs.File.Writer,
+    stderr: *Io.Writer,
+
+    fn init(allocator: Allocator) Allocator.Error!IoConfig {
+        const stdin_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stdin_buf);
+
+        const stdin_reader = try allocator.create(fs.File.Reader);
+        errdefer allocator.destroy(stdin_reader);
+        stdin_reader.* = fs.File.stdin().reader(stdin_buf);
+
+        const stdout_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stdout_buf);
+
+        const stdout_writer = try allocator.create(fs.File.Writer);
+        errdefer allocator.destroy(stdout_writer);
+        stdout_writer.* = fs.File.stdout().writer(stdout_buf);
+
+        const stderr_buf = try allocator.alloc(u8, 1024);
+        errdefer allocator.free(stderr_buf);
+
+        const stderr_writer = try allocator.create(fs.File.Writer);
+        errdefer allocator.destroy(stderr_writer);
+        stderr_writer.* = fs.File.stderr().writer(stderr_buf);
+
+        return .{
+            .stdin_reader = stdin_reader,
+            .stdin = &stdin_reader.interface,
+            .stdout_writer = stdout_writer,
+            .stdout = &stdout_writer.interface,
+            .stderr_writer = stderr_writer,
+            .stderr = &stderr_writer.interface,
+        };
+    }
+
+    pub fn deinit(self: *IoConfig, allocator: Allocator) void {
+        allocator.free(self.stdin_reader.interface.buffer);
+        allocator.destroy(self.stdin_reader);
+        allocator.free(self.stdout_writer.interface.buffer);
+        allocator.destroy(self.stdout_writer);
+        allocator.free(self.stderr_writer.interface.buffer);
+        allocator.destroy(self.stderr_writer);
+    }
+};
+
 fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     const allocator = tst.allocator;
 
@@ -563,6 +615,36 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
 
     try tst.expectEqualDeep(expected, result);
     try tst.expectEqual(vm.stack.pos, 0);
+}
+
+fn expectRuntimeError(input: []const u8, expected: RuntimeError) !void {
+    const allocator = tst.allocator;
+
+    var parser = Parser.init(allocator, input);
+    defer parser.deinit();
+    const ast = try parser.parse();
+
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+
+    var compiler = Compiler.init(allocator, &gc);
+    const func = try compiler.compile(ast);
+
+    var vm = try VirtualMachine.init(allocator, &gc);
+    defer vm.deinit();
+
+    var stderr = Io.Writer.Allocating.init(allocator);
+    defer stderr.deinit();
+    vm.io.stderr = &stderr.writer;
+
+    try tst.expectError(expected, vm.run(func));
+    try tst.expectEqual(0, vm.stack.pos);
+    try tst.expectEqual(0, vm.frames.items.len);
+    try tst.expectEqual(null, vm.open_upvalues);
+}
+
+test "Unwind stack on error" {
+    try expectRuntimeError("((fn f () x))", RuntimeError.UnboundSymbol);
 }
 
 test "Eval constant" {
