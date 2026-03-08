@@ -7,7 +7,6 @@ const Compiler = @import("compiler.zig").Compiler;
 const Func = @import("object.zig").Func;
 const Gc = @import("garbage_collector.zig").GarbageCollector;
 const Op = @import("bytecode.zig").Op;
-const Parser = @import("parser.zig").Parser;
 const Value = @import("value.zig").Value;
 
 /// Length of longest bytecode op string representation.
@@ -175,16 +174,11 @@ test "Disassemble bytecode" {
         \\(- -2)
     ;
 
-    var parser = Parser.init(tst.allocator, input);
-    defer parser.deinit();
-
-    const ast = try parser.parse();
-
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
     var cpl = Compiler.init(tst.allocator, &gc);
-    const func = try cpl.compile(ast);
+    const func = try cpl.compile(input);
 
     const expected =
         \\=== <fn *main*> ===

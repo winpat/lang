@@ -9,8 +9,6 @@ const CompileError = compile.CompileError;
 const Gc = @import("garbage_collector.zig").GarbageCollector;
 const NativeFunc = @import("object.zig").NativeFunc;
 const parse = @import("parser.zig");
-const Parser = parse.Parser;
-const ParseError = parse.ParseError;
 const Value = @import("value.zig").Value;
 const virtual_machine = @import("virtual_machine.zig");
 const Vm = virtual_machine.VirtualMachine;
@@ -55,12 +53,8 @@ pub const Interpreter = struct {
     }
 
     pub fn run(self: *Interpreter, input: []const u8) LangError!Value {
-        var parser = Parser.init(self.allocator, input);
-        defer parser.deinit();
-        const ast = try parser.parse();
-
         var compiler = Compiler.init(self.allocator, self.gc);
-        const func = try compiler.compile(ast);
+        const func = try compiler.compile(input);
 
         return try self.vm.run(func);
     }
@@ -78,7 +72,7 @@ pub const Interpreter = struct {
     }
 };
 
-pub const LangError = ParseError || CompileError || RuntimeError;
+pub const LangError = CompileError || RuntimeError;
 
 test "Interpreter run expression" {
     var interpreter = try Interpreter.init(tst.allocator);

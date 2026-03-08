@@ -22,7 +22,8 @@ const Op = @import("bytecode.zig").Op;
 const par = @import("parser.zig");
 const Ast = par.AbstractSyntaxTree;
 const Node = par.Node;
-const Parser = @import("parser.zig").Parser;
+const Parser = par.Parser;
+const ParseError = par.ParseError;
 const value = @import("value.zig");
 const Value = value.Value;
 const List = value.List;
@@ -38,7 +39,11 @@ pub const Compiler = struct {
         };
     }
 
-    pub fn compile(self: *Compiler, ast: Ast) CompileError!*Func {
+    pub fn compile(self: *Compiler, input: []const u8) CompileError!*Func {
+        var parser = Parser.init(self.allocator, input);
+        defer parser.deinit();
+        const ast = try parser.parse();
+
         if (ast.nodes.len == 0)
             return CompileError.EmptyAst;
 
@@ -78,7 +83,7 @@ pub const CompileError = error{
     DuplicateLocal,
     MaxScopeDepthExceeded,
     TooManyArguments,
-} || Allocator.Error;
+} || ParseError || Allocator.Error;
 
 const SpecialForm = *const fn (target: *FuncState, form: Node.List) CompileError!void;
 
@@ -796,16 +801,11 @@ const Upvalue = struct {
 };
 
 fn expectCompileError(input: []const u8, expected: CompileError) !void {
-    var parser = Parser.init(tst.allocator, input);
-    defer parser.deinit();
-
-    const ast = try parser.parse();
-
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
     var cpl = Compiler.init(tst.allocator, &gc);
-    try tst.expectError(expected, cpl.compile(ast));
+    try tst.expectError(expected, cpl.compile(input));
 }
 
 pub fn expectDisasmSnapshot(name: []const u8, loc: SourceLocation, input: []const u8) !void {
@@ -854,16 +854,11 @@ fn loadSnapshot(allocator: Allocator, path: []const u8) !?[]const u8 {
 }
 
 fn createSnapshot(allocator: Allocator, input: []const u8, loc: SourceLocation) ![]const u8 {
-    var parser = Parser.init(allocator, input);
-    defer parser.deinit();
-
-    const ast = try parser.parse();
-
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
     var cpl = Compiler.init(allocator, &gc);
-    const func = try cpl.compile(ast);
+    const func = try cpl.compile(input);
 
     var buf = Io.Writer.Allocating.init(tst.allocator);
     defer buf.deinit();

@@ -599,15 +599,11 @@ const IoConfig = struct {
 fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     const allocator = tst.allocator;
 
-    var parser = Parser.init(allocator, input);
-    defer parser.deinit();
-    const ast = try parser.parse();
-
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
     var compiler = Compiler.init(allocator, &gc);
-    const func = try compiler.compile(ast);
+    const func = try compiler.compile(input);
 
     var vm = try VirtualMachine.init(allocator, &gc);
     defer vm.deinit();
@@ -620,15 +616,11 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
 fn expectRuntimeError(input: []const u8, expected: RuntimeError) !void {
     const allocator = tst.allocator;
 
-    var parser = Parser.init(allocator, input);
-    defer parser.deinit();
-    const ast = try parser.parse();
-
     var gc = Gc.init(tst.allocator);
     defer gc.deinit();
 
     var compiler = Compiler.init(allocator, &gc);
-    const func = try compiler.compile(ast);
+    const func = try compiler.compile(input);
 
     var vm = try VirtualMachine.init(allocator, &gc);
     defer vm.deinit();
