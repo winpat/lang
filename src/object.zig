@@ -12,6 +12,7 @@ pub const Object = struct {
         node,
         string,
         symbol,
+        keyword,
         func,
         native_func,
         upvalue,
@@ -33,6 +34,11 @@ pub const Object = struct {
                 const symbol = self.as(Symbol);
                 symbol.deinit(allocator);
                 allocator.destroy(symbol);
+            },
+            .keyword => {
+                const keyword = self.as(Keyword);
+                keyword.deinit(allocator);
+                allocator.destroy(keyword);
             },
             .func => {
                 const func = self.as(Func);
@@ -68,6 +74,7 @@ pub const Object = struct {
             .native_func => NativeFunc,
             .string => String,
             .symbol => Symbol,
+            .keyword => Keyword,
             .node => Node,
             .upvalue => Upvalue,
             .closure => Closure,
@@ -78,7 +85,8 @@ pub const Object = struct {
         switch (self.tag) {
             .node => try writer.print("{f}", .{self.as(Node)}),
             .string => try writer.print("{f}", .{self.as(String)}),
-            .symbol => try writer.print("{f}", .{self.as(String)}),
+            .symbol => try writer.print("{f}", .{self.as(Symbol)}),
+            .keyword => try writer.print("{f}", .{self.as(Keyword)}),
             .func => try writer.print("{f}", .{self.as(Func)}),
             .native_func => try writer.print("{f}", .{self.as(NativeFunc)}),
             .upvalue => try writer.print("{f}", .{self.as(Upvalue)}),
@@ -92,6 +100,7 @@ pub const Object = struct {
         return switch (self.tag) {
             .string => self.as(String).equal(other.as(String).*),
             .symbol => self.as(Symbol).equal(other.as(Symbol).*),
+            .keyword => self.as(Keyword).equal(other.as(Keyword).*),
             .node, .func, .native_func, .upvalue, .closure => false,
         };
     }
@@ -166,6 +175,34 @@ pub const Symbol = struct {
     }
 
     pub fn equal(self: Symbol, other: Symbol) bool {
+        return self.len == other.len and
+            std.mem.eql(u8, self.ptr[0..self.len], other.ptr[0..other.len]);
+    }
+};
+
+pub const Keyword = struct {
+    obj: Object = .{ .tag = .keyword },
+    len: usize,
+    ptr: [*]const u8,
+
+    pub fn init(allocator: Allocator, name: []const u8) Allocator.Error!Keyword {
+        const duped = try allocator.dupe(u8, name);
+        return .{ .len = duped.len, .ptr = duped.ptr };
+    }
+
+    pub fn deinit(self: Keyword, allocator: Allocator) void {
+        allocator.free(self.slice());
+    }
+
+    pub fn format(self: Keyword, writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.print(":{s}", .{self.slice()});
+    }
+
+    pub fn slice(self: Keyword) []const u8 {
+        return self.ptr[0..self.len];
+    }
+
+    pub fn equal(self: Keyword, other: Keyword) bool {
         return self.len == other.len and
             std.mem.eql(u8, self.ptr[0..self.len], other.ptr[0..other.len]);
     }

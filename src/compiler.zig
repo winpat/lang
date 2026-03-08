@@ -17,6 +17,7 @@ const object = @import("object.zig");
 const Func = object.Func;
 const String = object.String;
 const Symbol = object.Symbol;
+const Keyword = object.Keyword;
 const Op = @import("bytecode.zig").Op;
 const par = @import("parser.zig");
 const Ast = par.AbstractSyntaxTree;
@@ -118,6 +119,7 @@ fn emitExpr(target: *FuncState, node: Node, tail: bool) CompileError!void {
         .nil => |nil| emitNil(target, nil),
         .string => |string| emitString(target, string),
         .symbol => |symbol| emitSymbolLookup(target, symbol),
+        .keyword => |keyword| emitKeyword(target, keyword),
         .list => |list| emitForm(target, list, tail),
     };
 }
@@ -193,6 +195,30 @@ fn findSymbolConstant(target: *FuncState, name: []const u8) ?u8 {
 
         const symbol = obj.as(Symbol);
         if (mem.eql(u8, symbol.slice(), name)) {
+            return @intCast(idx);
+        }
+    }
+    return null;
+}
+
+fn emitKeyword(target: *FuncState, node: Node.Keyword) CompileError!void {
+    if (findKeywordConstant(target, node.name)) |cidx| {
+        try target.addOpWithByte(.load_constant, cidx, node.line);
+    } else {
+        const keyword = try target.gc.create(Keyword, .{node.name});
+        const cidx = try target.addConstant(.{ .object = &keyword.obj });
+        try target.addOpWithByte(.load_constant, cidx, node.line);
+    }
+}
+
+fn findKeywordConstant(target: *FuncState, name: []const u8) ?u8 {
+    for (target.constants.items, 0..) |constant, idx| {
+        if (constant != .object) continue;
+        const obj = constant.object;
+        if (obj.tag != .keyword) continue;
+
+        const keyword = obj.as(Keyword);
+        if (mem.eql(u8, keyword.slice(), name)) {
             return @intCast(idx);
         }
     }
@@ -885,6 +911,8 @@ test "Compile data literals" {
 
     try expectDisasmSnapshot("symbol", @src(), "reduce");
 
+    try expectDisasmSnapshot("keyword", @src(), ":key");
+
     try expectDisasmSnapshot("empty_list", @src(), "()");
 }
 
@@ -892,6 +920,7 @@ test "Test constants resuse" {
     try expectDisasmSnapshot("duplicate_numeric_constants", @src(), "3 3");
     try expectDisasmSnapshot("duplicate_string_constants", @src(), "\"hello\" \"hello\"");
     try expectDisasmSnapshot("duplicate_symbol_constants", @src(), "map map");
+    try expectDisasmSnapshot("duplicate_keyword_constants", @src(), ":key :key");
 }
 
 test "Compile arithmetic forms" {

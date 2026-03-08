@@ -45,6 +45,7 @@ pub const Parser = struct {
             .boolean_false => .{ .boolean = .{ .val = false, .line = tk.line } },
             .nil => .{ .nil = .{ .line = tk.line } },
             .symbol => .{ .symbol = .{ .name = tk.lexeme, .line = tk.line } },
+            .keyword => .{ .keyword = .{ .name = tk.lexeme[1..tk.lexeme.len], .line = tk.line } },
             .string => .{ .string = .{ .chars = tk.lexeme[1 .. tk.lexeme.len - 1], .line = tk.line } },
             .lparen => self.parseList(allocator, tk.line),
             .rparen => return ParseError.UnexpectedRightParen,
@@ -81,6 +82,7 @@ pub const Node = union(enum) {
     nil: Nil,
     string: String,
     symbol: Symbol,
+    keyword: Keyword,
     list: List,
 
     pub const Number = struct { val: f64, line: u32 };
@@ -88,11 +90,12 @@ pub const Node = union(enum) {
     pub const Nil = struct { line: u32 };
     pub const String = struct { chars: []const u8, line: u32 };
     pub const Symbol = struct { name: []const u8, line: u32 };
+    pub const Keyword = struct { name: []const u8, line: u32 };
     pub const List = struct { items: []const Node, line: u32 };
 
     pub fn getLine(self: Node) u32 {
         return switch (self) {
-            inline .number, .boolean, .nil, .string, .symbol, .list => |obj| obj.line,
+            inline .number, .boolean, .nil, .string, .symbol, .keyword, .list => |obj| obj.line,
         };
     }
 };
@@ -155,6 +158,13 @@ test "Parse symbol" {
     try expectAstWithOneNode(
         "reduce",
         .{ .symbol = .{ .name = "reduce", .line = 1 } },
+    );
+}
+
+test "Parse keyword" {
+    try expectAstWithOneNode(
+        ":key",
+        .{ .keyword = .{ .name = "key", .line = 1 } },
     );
 }
 

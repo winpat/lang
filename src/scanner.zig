@@ -20,6 +20,7 @@ pub const Scanner = struct {
                 '(' => break self.createToken(.lparen),
                 ')' => break self.createToken(.rparen),
                 '"' => break try self.scanString(),
+                ':' => break try self.scanKeyword(),
                 '0'...'9' => break self.scanNumber(),
                 '+', '-', '.' => {
                     const next = self.peek() orelse return self.scanSymbol();
@@ -102,6 +103,23 @@ pub const Scanner = struct {
         }
         return self.createToken(.symbol);
     }
+
+    fn scanKeyword(self: *Scanner) ScanError!Token {
+        // A keyword identifier ":" needs to be followed by at least one symbol char.
+        const char = self.peek() orelse return ScanError.InvalidToken;
+
+        if (isSymbolChar(char))
+            self.pos += 1
+        else
+            return ScanError.InvalidToken;
+
+        while (self.peek()) |next| {
+            if (!isSymbolChar(next)) break;
+            self.pos += 1;
+        }
+
+        return self.createToken(.keyword);
+    }
 };
 
 const tag_by_literal = std.StaticStringMap(Token.Tag).initComptime(
@@ -115,6 +133,7 @@ const tag_by_literal = std.StaticStringMap(Token.Tag).initComptime(
 pub const ScanError = error{
     UnterminatedString,
     UnsupportedCharacter,
+    InvalidToken,
 };
 
 pub const Token = struct {
@@ -124,6 +143,7 @@ pub const Token = struct {
         string,
         number,
         symbol,
+        keyword,
         nil,
         boolean_true,
         boolean_false,
@@ -236,6 +256,13 @@ test "Scan unterminated string" {
     );
 }
 
+test "Scan invalid token" {
+    try expectScanError(
+        ":",
+        ScanError.InvalidToken,
+    );
+}
+
 test "Scan integer number" {
     const cases = [_][]const u8{ "123", "+123", "-123" };
     for (cases) |case| {
@@ -264,6 +291,13 @@ test "Scan symbol" {
             Token{ .tag = .symbol, .lexeme = case, .line = 1 },
         );
     }
+}
+
+test "Scan keyword" {
+    try expectToken(
+        ":key",
+        Token{ .tag = .keyword, .lexeme = ":key", .line = 1 },
+    );
 }
 
 test "Scan nil" {

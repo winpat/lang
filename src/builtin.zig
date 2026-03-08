@@ -25,6 +25,7 @@ pub const funcs = [_]struct { name: []const u8, impl: NativeFunc.ImplPtr }{
     // Object predicates
     .{ .name = "string?", .impl = isString },
     .{ .name = "symbol?", .impl = isSymbol },
+    .{ .name = "keyword?", .impl = isKeyword },
     .{ .name = "function?", .impl = isFunction },
     // Sequence
     .{ .name = "list", .impl = list },
@@ -161,6 +162,19 @@ test "symbol?" {
 
     try expectCases(isSymbol, &.{
         .{ &.{object(&symbol_obj)}, boolean(true) },
+        .{ &.{empty_list()}, boolean(false) },
+        .{ &.{}, RuntimeError.UnsupportedArity },
+        .{ &.{ nil(), nil() }, RuntimeError.UnsupportedArity },
+    });
+}
+
+const isKeyword = objectOfType(.keyword);
+
+test "keyword?" {
+    var keyword_obj = o.Object{ .tag = .keyword };
+
+    try expectCases(isKeyword, &.{
+        .{ &.{object(&keyword_obj)}, boolean(true) },
         .{ &.{empty_list()}, boolean(false) },
         .{ &.{}, RuntimeError.UnsupportedArity },
         .{ &.{ nil(), nil() }, RuntimeError.UnsupportedArity },

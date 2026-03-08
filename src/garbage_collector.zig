@@ -9,6 +9,7 @@ const object = @import("object.zig");
 const Object = object.Object;
 const String = object.String;
 const Symbol = object.Symbol;
+const Keyword = object.Keyword;
 const Func = object.Func;
 const Node = object.Node;
 const Upvalue = object.Upvalue;
@@ -119,7 +120,7 @@ pub const GarbageCollector = struct {
 
     fn blackenObject(self: *GarbageCollector, obj: *Object) Allocator.Error!void {
         switch (obj.tag) {
-            .string, .symbol, .native_func => {},
+            .string, .symbol, .keyword, .native_func => {},
             .node => {
                 const node = obj.as(Node);
                 try self.markValue(node.value);
