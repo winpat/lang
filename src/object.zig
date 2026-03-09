@@ -214,6 +214,7 @@ pub const Func = struct {
     obj: Object = .{ .tag = .func },
     name: ?[]const u8 = null,
     arity: u8,
+    variadic: bool = false,
     constants: []const Value,
     code: []const u8,
     lines: []const u32,
@@ -223,6 +224,7 @@ pub const Func = struct {
         allocator: Allocator,
         name: ?[]const u8,
         arity: u8,
+        variadic: bool,
         constants: []const Value,
         code: []const u8,
         lines: []const u32,
@@ -231,6 +233,7 @@ pub const Func = struct {
         return .{
             .name = if (name != null) try allocator.dupe(u8, name.?) else null,
             .arity = arity,
+            .variadic = variadic,
             .constants = try allocator.dupe(Value, constants),
             .code = try allocator.dupe(u8, code),
             .lines = try allocator.dupe(u32, lines),

@@ -15,6 +15,7 @@ const Module = comp.Module;
 const Gc = @import("garbage_collector.zig").GarbageCollector;
 const object = @import("object.zig");
 const Object = object.Object;
+const Node = object.Node;
 const Func = object.Func;
 const NativeFunc = object.NativeFunc;
 const Symbol = object.Symbol;
@@ -22,7 +23,9 @@ const Upvalue = object.Upvalue;
 const Closure = object.Closure;
 const Op = @import("bytecode.zig").Op;
 const Parser = @import("parser.zig").Parser;
-const Value = @import("value.zig").Value;
+const value = @import("value.zig");
+const Value = value.Value;
+const List = value.List;
 
 const stack_depth_max: usize = 256;
 
@@ -64,8 +67,9 @@ pub const VirtualMachine = struct {
         self.frames.deinit(self.allocator);
     }
 
-    pub fn run(self: *VirtualMachine, callable: *Func) RuntimeError!Value {
+    pub fn run(self: *VirtualMachine, entrypoint: *Func) RuntimeError!Value {
         const allocator = self.allocator;
+        var gc = self.gc;
         var stack = &self.stack;
         var frames = &self.frames;
         var globals = &self.globals;
@@ -73,9 +77,9 @@ pub const VirtualMachine = struct {
         errdefer self.unwindStack();
 
         // Slot 0 of the stack holds the function being called
-        try stack.pushAs(.object, &callable.obj);
+        try stack.pushAs(.object, &entrypoint.obj);
 
-        try frames.append(allocator, CallFrame.initFunc(callable, &stack.items));
+        try frames.append(allocator, CallFrame.initFunc(entrypoint, &stack.items));
         var frame = &frames.items[0];
 
         while (!frame.atEnd()) {
@@ -287,82 +291,105 @@ pub const VirtualMachine = struct {
 
                     try stack.push(tmp);
                 },
-                .call => {
+                .call, .tail_call => |op| {
+                    const tail_call = op == .tail_call;
+
                     const argc = frame.readByte();
-                    const sidx = stack.pos - argc - 1;
+                    const callable_stack_idx = stack.pos - argc - 1;
+                    const callable = stack.items[callable_stack_idx];
 
-                    const val = stack.items[sidx];
+                    if (callable != .object) return RuntimeError.NotCallable;
+                    const obj = callable.object;
 
-                    if (val != .object) return RuntimeError.NotCallable;
-                    const obj = val.object;
+                    if (op == .tail_call) {
+                        // Close upvalues of the frame we want to reuse
+                        try self.closeUpvalues(&frame.fp[0]);
 
-                    const frame_ptr = stack.items[sidx..].ptr;
-                    switch (obj.tag) {
-                        .func => {
-                            const func = obj.as(Func);
-                            if (func.arity != argc) return RuntimeError.UnsupportedArity;
-                            try frames.append(allocator, CallFrame.initFunc(func, frame_ptr));
-                            frame = &self.frames.items[self.frames.items.len - 1];
-                        },
-                        .closure => {
-                            const closure = obj.as(Closure);
-                            if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
-                            try frames.append(allocator, CallFrame.initClosure(closure, frame_ptr));
-                            frame = &self.frames.items[self.frames.items.len - 1];
-                        },
-                        .native_func => {
-                            const native_func = obj.as(NativeFunc);
-                            const args = stack.items[stack.pos - argc .. stack.pos];
-                            const result = try native_func.impl(self.getNativeContext(), args);
-                            stack.pos = sidx;
-                            try stack.push(result);
-                        },
-                        else => return RuntimeError.NotCallable,
+                        // Copy arguments into current frame.
+                        const src = stack.items[callable_stack_idx .. callable_stack_idx + argc + 1];
+                        for (src, 0..) |v, i| frame.fp[i] = v;
+
+                        // Adjust stack position to point to the next free slot after arguments.
+                        stack.pos = frame.fp - &stack.items + argc + 1;
                     }
-                },
-                .tail_call => {
-                    const argc = frame.readByte();
-                    const sidx = stack.pos - argc - 1;
-
-                    const val = stack.items[sidx];
-
-                    if (val != .object) return RuntimeError.NotCallable;
-                    const obj = val.object;
-
-                    try self.closeUpvalues(&frame.fp[0]);
-
-                    const src = stack.items[sidx .. sidx + argc + 1];
-                    for (src, 0..) |v, i| frame.fp[i] = v;
-
-                    const base = frame.fp - &stack.items;
-                    stack.pos = base + argc + 1;
 
                     switch (obj.tag) {
                         .func => {
                             const func = obj.as(Func);
-                            if (func.arity != argc) return RuntimeError.UnsupportedArity;
-                            frame.callee = .{ .func = func };
-                            frame.func = func;
-                            frame.ip = 0;
+                            if (func.variadic) {
+                                if (argc < func.arity) return RuntimeError.UnsupportedArity;
+
+                                gc.disable();
+                                defer gc.enable();
+
+                                var var_arg_count = argc - func.arity;
+                                var var_args = List{};
+                                while (var_arg_count > 0) : (var_arg_count -= 1) {
+                                    const arg = try self.stack.pop();
+                                    try var_args.prepend(gc, arg);
+                                }
+                                try self.stack.pushAs(.list, var_args);
+                            } else {
+                                if (argc != func.arity) return RuntimeError.UnsupportedArity;
+                            }
+
+                            if (tail_call) {
+                                frame.callee = .{ .func = func };
+                                frame.func = func;
+                                frame.ip = 0;
+                            } else {
+                                const frame_ptr = stack.items[callable_stack_idx..].ptr;
+                                try frames.append(allocator, CallFrame.initFunc(func, frame_ptr));
+                                frame = &self.frames.items[self.frames.items.len - 1];
+                            }
                         },
                         .closure => {
                             const closure = obj.as(Closure);
-                            if (closure.func.arity != argc) return RuntimeError.UnsupportedArity;
-                            frame.callee = .{ .closure = closure };
-                            frame.func = closure.func;
-                            frame.ip = 0;
+                            const func = closure.func;
+
+                            if (func.variadic) {
+                                if (argc < func.arity) return RuntimeError.UnsupportedArity;
+
+                                gc.disable();
+                                defer gc.enable();
+
+                                var var_arg_count = argc - func.arity;
+                                var var_args = List{};
+                                while (var_arg_count > 0) : (var_arg_count -= 1) {
+                                    const arg = try self.stack.pop();
+                                    try var_args.prepend(gc, arg);
+                                }
+                                try self.stack.pushAs(.list, var_args);
+                            } else {
+                                if (argc != func.arity) return RuntimeError.UnsupportedArity;
+                            }
+
+                            if (tail_call) {
+                                frame.callee = .{ .closure = closure };
+                                frame.func = closure.func;
+                                frame.ip = 0;
+                            } else {
+                                const frame_ptr = stack.items[callable_stack_idx..].ptr;
+                                try frames.append(allocator, CallFrame.initClosure(closure, frame_ptr));
+                                frame = &self.frames.items[self.frames.items.len - 1];
+                            }
                         },
                         .native_func => {
                             const native_func = obj.as(NativeFunc);
                             const args = stack.items[stack.pos - argc .. stack.pos];
                             const result = try native_func.impl(self.getNativeContext(), args);
-                            const frame_base = frame.fp - &stack.items;
-                            _ = frames.pop();
-                            stack.pos = frame_base;
-                            if (frames.items.len == 0) return result;
-                            try stack.push(result);
-                            frame = &frames.items[frames.items.len - 1];
-                            continue;
+
+                            if (tail_call) {
+                                const frame_base = frame.fp - &stack.items;
+                                _ = frames.pop();
+                                stack.pos = frame_base;
+                                if (frames.items.len == 0) return result;
+                                try stack.push(result);
+                                frame = &frames.items[frames.items.len - 1];
+                            } else {
+                                stack.pos = callable_stack_idx;
+                                try stack.push(result);
+                            }
                         },
                         else => return RuntimeError.NotCallable,
                     }
@@ -579,7 +606,7 @@ const CallFrame = struct {
     }
 };
 
-fn expectEvalTo(input: []const u8, expected: ?Value) !void {
+fn expectEvalTo(input: []const u8, expected: Value) !void {
     const allocator = tst.allocator;
 
     var gc = Gc.init(tst.allocator);
@@ -609,9 +636,17 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     );
 
     defer vm.deinit();
-    const result = try vm.run(func);
+    const actual = try vm.run(func);
 
-    try tst.expectEqualDeep(expected, result);
+    if (!expected.equal(actual)) {
+        std.debug.print(
+            \\Expected: {f}
+            \\Actual:   {f}
+            \\
+        , .{ expected, actual });
+
+        return error.TestExpectedEqual;
+    }
     try tst.expectEqual(vm.stack.pos, 0);
 }
 
@@ -815,5 +850,72 @@ test "Import module" {
         \\(def blank? 42)
         \\(import string)
         \\blank?
+    , .{ .number = 42 });
+}
+
+test "Call variadic function" {
+    // TODO Refactor expectEvalTo so we can access the GC of it.
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+    const expected = Value{
+        .list = try List.fromSlice(
+            &gc,
+            &.{
+                .{ .number = 1 },
+                .{ .number = 2 },
+                .{ .number = 3 },
+            },
+        ),
+    };
+
+    try expectEvalTo(
+        \\(defn identity (& args) args)
+        \\(identity 1 2 3)
+    , expected);
+
+    // Mixed fixed + rest parameters
+    const expected_rest = Value{
+        .list = try List.fromSlice(
+            &gc,
+            &.{
+                .{ .number = 3 },
+                .{ .number = 4 },
+            },
+        ),
+    };
+
+    try expectEvalTo(
+        \\(defn rest-args (a b & rest) rest)
+        \\(rest-args 1 2 3 4)
+    , expected_rest);
+}
+
+test "Tail call variadic function" {
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+    const expected = Value{
+        .list = try List.fromSlice(
+            &gc,
+            &.{
+                .{ .number = 1 },
+                .{ .number = 2 },
+                .{ .number = 3 },
+            },
+        ),
+    };
+
+    try expectEvalTo(
+        \\(defn variadic-tail (n & args)
+        \\  (if (= n 0) args (variadic-tail (- n 1) 1 2 3)))
+        \\(variadic-tail 10)
+    , expected);
+}
+
+test "Variadic closure" {
+    try expectEvalTo(
+        \\(defn make-fn (x)
+        \\  (fn (& args) x))
+        \\(def f (make-fn 42))
+        \\(f 1 2 3)
     , .{ .number = 42 });
 }

@@ -4,6 +4,7 @@ const meta = std.meta;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+const Gc = @import("garbage_collector.zig").GarbageCollector;
 const obj = @import("object.zig");
 const Object = obj.Object;
 const Node = obj.Node;
@@ -82,6 +83,25 @@ pub const List = struct {
         }
 
         return b == null;
+    }
+
+    pub fn prepend(self: *List, gc: *Gc, val: Value) Allocator.Error!void {
+        const node = try gc.create(Node, .{ val, self.head });
+        self.head = node;
+    }
+
+    pub fn fromSlice(gc: *Gc, values: []const Value) Allocator.Error!List {
+        gc.disable();
+        defer gc.enable();
+
+        var list = List{};
+        var i = values.len;
+        while (i > 0) : (i -= 1) {
+            const val = values[i - 1];
+            const node = try gc.create(Node, .{ val, list.head });
+            list.head = node;
+        }
+        return list;
     }
 };
 

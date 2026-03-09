@@ -1,0 +1,26 @@
+== test.Compile fn form ==
+
+(defn sum (& args) (apply + args))
+
+=== <fn *main*> ===
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    load_constant     1
+  0004    1    define_global
+  0005    1    ret
+ Constants
+  0   object     sum
+  1   object     <fn sum>
+
+==== <fn sum> ====
+ Bytecode
+  0000    1    load_constant     0
+  0002    1    load_global
+  0003    1    load_constant     1
+  0005    1    load_global
+  0006    1    load_local        1
+  0008    1    tail_call         2
+  0010    1    ret
+ Constants
+  0   object     apply
+  1   object     +

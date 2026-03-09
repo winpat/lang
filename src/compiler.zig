@@ -130,6 +130,7 @@ pub const CompileError = error{
     InvalidDefnForm,
     InvalidFnForm,
     InvalidImportForm,
+    InvalidParamForm,
     UnsupportedArity,
     JumpOffsetTooLarge,
     ConstantPoolExceeded,
@@ -683,11 +684,7 @@ fn emitFunc(cpl: *Compiler, target: *FuncState, name: ?[]const u8, params: []con
     );
     defer func_state.deinit();
 
-    for (params) |param| {
-        if (param != .symbol) return CompileError.InvalidFnForm;
-        try func_state.addLocal(param.symbol.name);
-    }
-
+    try emitParams(&func_state, params);
     try emitBlock(cpl, &func_state, body, line, true);
 
     const return_line = if (body.len > 0)
@@ -710,6 +707,28 @@ fn emitFunc(cpl: *Compiler, target: *FuncState, name: ?[]const u8, params: []con
         }
     } else {
         try target.addOpWithByte(.load_constant, cidx, line);
+    }
+}
+
+fn emitParams(target: *FuncState, form: []const Node) CompileError!void {
+    for (form, 0..) |param, idx| {
+        if (param != .symbol) return CompileError.InvalidParamForm;
+
+        const name = param.symbol.name;
+
+        // We will aggregate the variadic arguments into a list and bind it to
+        // the last symbol at runtime.
+        if (name.len == 1 and name[0] == '&') {
+            if (idx + 2 != form.len or form[form.len - 1] != .symbol)
+                return CompileError.InvalidParamForm;
+
+            // We don't count the symbol holding the variadic arguments to the arity.
+            target.arity -= 2;
+            target.variadic = true;
+            continue;
+        }
+
+        try target.addLocal(name);
     }
 }
 
@@ -739,6 +758,7 @@ const FuncState = struct {
     allocator: Allocator,
     name: ?[]const u8 = null,
     arity: u8,
+    variadic: bool = false,
     scope_depth: u16,
     constants: ArrayList(Value) = .{},
     code: ArrayList(u8) = .{},
@@ -781,6 +801,7 @@ const FuncState = struct {
             .{
                 self.name,
                 self.arity,
+                self.variadic,
                 self.constants.items,
                 self.code.items,
                 self.lines.items,
@@ -1137,6 +1158,7 @@ test "Compile fn form" {
     try expectDisasmSnapshot("fn_empty", @src(), "(fn empty ())");
     try expectDisasmSnapshot("fn_add_two_numbers", @src(), "(fn add (x y) (+ x y))");
     try expectDisasmSnapshot("fn_add_five", @src(), "(fn add (x) (+ x 5))");
+    try expectDisasmSnapshot("fn_add_variadic", @src(), "(defn sum (& args) (apply + args))");
 }
 
 test "Compile function call" {
