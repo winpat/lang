@@ -29,19 +29,31 @@ const stack_depth_max: usize = 256;
 pub const VirtualMachine = struct {
     allocator: Allocator,
     gc: *Gc,
+    stdin: *Io.Reader,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+
     module_cache: *StringHashMap(*Module),
     globals: StringHashMap(Value) = .{},
     frames: ArrayList(CallFrame) = .{},
     stack: Stack = .{},
     open_upvalues: ?*Upvalue = null,
-    io: IoConfig,
 
-    pub fn init(allocator: Allocator, gc: *Gc, module_cache: *StringHashMap(*Module)) Allocator.Error!VirtualMachine {
+    pub fn init(
+        allocator: Allocator,
+        stdin: *Io.Reader,
+        stdout: *Io.Writer,
+        stderr: *Io.Writer,
+        gc: *Gc,
+        module_cache: *StringHashMap(*Module),
+    ) Allocator.Error!VirtualMachine {
         return .{
             .allocator = allocator,
             .gc = gc,
+            .stdin = stdin,
+            .stdout = stdout,
+            .stderr = stderr,
             .module_cache = module_cache,
-            .io = try IoConfig.init(allocator),
         };
     }
 
@@ -50,7 +62,6 @@ pub const VirtualMachine = struct {
         while (iter.next()) |key| self.allocator.free(key.*);
         self.globals.deinit(self.allocator);
         self.frames.deinit(self.allocator);
-        self.io.deinit(self.allocator);
     }
 
     pub fn run(self: *VirtualMachine, callable: *Func) RuntimeError!Value {
@@ -408,7 +419,8 @@ pub const VirtualMachine = struct {
     }
 
     fn unwindStack(self: *VirtualMachine) void {
-        const stderr = self.io.stderr;
+        const stderr = self.stderr;
+        stderr.writeByte('\n') catch @panic("Unable to unwind stack.");
         var i = self.frames.items.len;
         while (i > 0) : (i -= 1) {
             const frame = self.frames.pop() orelse @panic("Unable to unwind stack.");
@@ -424,9 +436,9 @@ pub const VirtualMachine = struct {
     fn getNativeContext(self: *VirtualMachine) NativeFunc.Context {
         return .{
             .gc = self.gc,
-            .stdin = self.io.stdin,
-            .stdout = self.io.stdout,
-            .stderr = self.io.stderr,
+            .stdin = self.stdin,
+            .stdout = self.stdout,
+            .stderr = self.stderr,
         };
     }
 
@@ -567,58 +579,6 @@ const CallFrame = struct {
     }
 };
 
-const IoConfig = struct {
-    stdin_reader: *fs.File.Reader,
-    stdin: *Io.Reader,
-
-    stdout_writer: *fs.File.Writer,
-    stdout: *Io.Writer,
-
-    stderr_writer: *fs.File.Writer,
-    stderr: *Io.Writer,
-
-    fn init(allocator: Allocator) Allocator.Error!IoConfig {
-        const stdin_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stdin_buf);
-
-        const stdin_reader = try allocator.create(fs.File.Reader);
-        errdefer allocator.destroy(stdin_reader);
-        stdin_reader.* = fs.File.stdin().reader(stdin_buf);
-
-        const stdout_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stdout_buf);
-
-        const stdout_writer = try allocator.create(fs.File.Writer);
-        errdefer allocator.destroy(stdout_writer);
-        stdout_writer.* = fs.File.stdout().writer(stdout_buf);
-
-        const stderr_buf = try allocator.alloc(u8, 1024);
-        errdefer allocator.free(stderr_buf);
-
-        const stderr_writer = try allocator.create(fs.File.Writer);
-        errdefer allocator.destroy(stderr_writer);
-        stderr_writer.* = fs.File.stderr().writer(stderr_buf);
-
-        return .{
-            .stdin_reader = stdin_reader,
-            .stdin = &stdin_reader.interface,
-            .stdout_writer = stdout_writer,
-            .stdout = &stdout_writer.interface,
-            .stderr_writer = stderr_writer,
-            .stderr = &stderr_writer.interface,
-        };
-    }
-
-    pub fn deinit(self: *IoConfig, allocator: Allocator) void {
-        allocator.free(self.stdin_reader.interface.buffer);
-        allocator.destroy(self.stdin_reader);
-        allocator.free(self.stdout_writer.interface.buffer);
-        allocator.destroy(self.stdout_writer);
-        allocator.free(self.stderr_writer.interface.buffer);
-        allocator.destroy(self.stderr_writer);
-    }
-};
-
 fn expectEvalTo(input: []const u8, expected: ?Value) !void {
     const allocator = tst.allocator;
 
@@ -630,7 +590,24 @@ fn expectEvalTo(input: []const u8, expected: ?Value) !void {
 
     const func = try cpl.compile(input);
 
-    var vm = try VirtualMachine.init(allocator, &gc, &cpl.module_cache);
+    var stdin_buf = [_]u8{0} ** 1024;
+    var stdin_reader = fs.File.stdin().reader(&stdin_buf);
+
+    var stdout = Io.Writer.Allocating.init(allocator);
+    defer stdout.deinit();
+
+    var stderr = Io.Writer.Allocating.init(allocator);
+    defer stderr.deinit();
+
+    var vm = try VirtualMachine.init(
+        allocator,
+        &stdin_reader.interface,
+        &stdout.writer,
+        &stderr.writer,
+        &gc,
+        &cpl.module_cache,
+    );
+
     defer vm.deinit();
     const result = try vm.run(func);
 
@@ -649,12 +626,24 @@ fn expectRuntimeError(input: []const u8, expected: RuntimeError) !void {
 
     const func = try cpl.compile(input);
 
-    var vm = try VirtualMachine.init(allocator, &gc, &cpl.module_cache);
-    defer vm.deinit();
+    var stdin_buf = [_]u8{0} ** 1024;
+    var stdin_reader = fs.File.stdin().reader(&stdin_buf);
+
+    var stdout = Io.Writer.Allocating.init(allocator);
+    defer stdout.deinit();
 
     var stderr = Io.Writer.Allocating.init(allocator);
     defer stderr.deinit();
-    vm.io.stderr = &stderr.writer;
+
+    var vm = try VirtualMachine.init(
+        allocator,
+        &stdin_reader.interface,
+        &stdout.writer,
+        &stderr.writer,
+        &gc,
+        &cpl.module_cache,
+    );
+    defer vm.deinit();
 
     try tst.expectError(expected, vm.run(func));
     try tst.expectEqual(0, vm.stack.pos);

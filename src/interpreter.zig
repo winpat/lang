@@ -1,5 +1,7 @@
 const std = @import("std");
 const tst = std.testing;
+const Io = std.Io;
+const fs = std.fs;
 const Allocator = std.mem.Allocator;
 
 const builtin = @import("builtin.zig");
@@ -16,11 +18,16 @@ const RuntimeError = virtual_machine.RuntimeError;
 
 pub const Interpreter = struct {
     allocator: Allocator,
+
+    stdin: *Io.Reader,
+    stdout: *Io.Writer,
+    stderr: *Io.Writer,
+
     gc: *Gc,
     vm: *Vm,
     cpl: *Compiler,
 
-    pub fn init(allocator: Allocator) LangError!Interpreter {
+    pub fn init(allocator: Allocator, stdin: *Io.Reader, stdout: *Io.Writer, stderr: *Io.Writer) LangError!Interpreter {
         const gc = try allocator.create(Gc);
         errdefer allocator.destroy(gc);
 
@@ -36,13 +43,16 @@ pub const Interpreter = struct {
         const vm = try allocator.create(Vm);
         errdefer allocator.destroy(vm);
 
-        vm.* = try Vm.init(allocator, gc, &cpl.module_cache);
+        vm.* = try Vm.init(allocator, stdin, stdout, stderr, gc, &cpl.module_cache);
         errdefer vm.deinit();
 
         gc.vm = vm;
 
         var self = Interpreter{
             .allocator = allocator,
+            .stdin = stdin,
+            .stdout = stdout,
+            .stderr = stderr,
             .gc = gc,
             .cpl = cpl,
             .vm = vm,
@@ -82,26 +92,36 @@ pub const Interpreter = struct {
 
 pub const LangError = CompileError || RuntimeError;
 
-test "Interpreter run expression" {
-    var interpreter = try Interpreter.init(tst.allocator);
+pub fn expectEvalTo(input: []const u8, expected: Value) !void {
+    var stdin_buf = [_]u8{0} ** 1024;
+    var stdin_reader = fs.File.stdin().reader(&stdin_buf);
+
+    var stdout = Io.Writer.Allocating.init(tst.allocator);
+    defer stdout.deinit();
+
+    var stderr = Io.Writer.Allocating.init(tst.allocator);
+    defer stderr.deinit();
+
+    var interpreter = try Interpreter.init(
+        tst.allocator,
+        &stdin_reader.interface,
+        &stdout.writer,
+        &stderr.writer,
+    );
     defer interpreter.deinit();
 
-    const result = try interpreter.run("(+ 41 1)");
-    try tst.expectEqual(Value{ .number = 42 }, result);
+    const result = try interpreter.run(input);
+    try tst.expectEqual(expected, result);
+}
+
+test "Interpreter run expression" {
+    try expectEvalTo("(+ 41 1)", .{ .number = 42 });
 }
 
 test "Interpreter run builtin" {
-    var interpreter = try Interpreter.init(tst.allocator);
-    defer interpreter.deinit();
-
-    const result = try interpreter.run("(nil? nil)");
-    try tst.expectEqual(Value{ .boolean = true }, result);
+    try expectEvalTo("(nil? nil)", .{ .boolean = true });
 }
 
 test "Interpreter run prelude function" {
-    var interpreter = try Interpreter.init(tst.allocator);
-    defer interpreter.deinit();
-
-    const result = try interpreter.run("(inc 1)");
-    try tst.expectEqual(Value{ .number = 2 }, result);
+    try expectEvalTo("(inc 1)", .{ .number = 2 });
 }
