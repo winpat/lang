@@ -51,6 +51,10 @@ pub const Parser = struct {
             .rparen => return ParseError.UnexpectedRightParen,
             .lbracket => self.parseVector(allocator, tk.line),
             .rbracket => return ParseError.UnexpectedRightBracket,
+            .quote => try self.wrapExpr(allocator, tk.line, "quote"),
+            .quasiquote => try self.wrapExpr(allocator, tk.line, "quasiquote"),
+            .unquote => try self.wrapExpr(allocator, tk.line, "unquote"),
+            .unquote_splice => try self.wrapExpr(allocator, tk.line, "unquote-splice"),
         };
     }
 
@@ -85,6 +89,19 @@ pub const Parser = struct {
             },
         };
     }
+
+    fn wrapExpr(self: *Parser, allocator: Allocator, line: u32, sym: []const u8) ParseError!Node {
+        const tk = try self.scanner.scanToken() orelse return ParseError.MissingExpr;
+        const expr = try self.parseExpr(allocator, tk);
+        const items = &[_]Node{ .{ .symbol = .{ .name = sym, .line = line } }, expr };
+
+        return Node{
+            .list = Node.List{
+                .items = try allocator.dupe(Node, items),
+                .line = line,
+            },
+        };
+    }
 };
 
 pub const ParseError = error{
@@ -92,6 +109,7 @@ pub const ParseError = error{
     UnexpectedRightBracket,
     MissingRightParen,
     MissingRightBracket,
+    MissingExpr,
 } || scanner.ScanError || fmt.ParseFloatError || Allocator.Error;
 
 pub const AbstractSyntaxTree = struct { nodes: []const Node };
@@ -196,6 +214,50 @@ test "Parse keyword" {
         ":key",
         .{ .keyword = .{ .name = "key", .line = 1 } },
     );
+}
+
+test "Parse quote" {
+    try expectAstWithOneNode("'foo", .{
+        .list = .{ .items = &.{
+            .{ .symbol = .{ .name = "quote", .line = 1 } },
+            .{ .symbol = .{ .name = "foo", .line = 1 } },
+        }, .line = 1 },
+    });
+
+    try expectParseError("'", ParseError.MissingExpr);
+}
+
+test "Parse quasiquote" {
+    try expectAstWithOneNode("`foo", .{
+        .list = .{ .items = &.{
+            .{ .symbol = .{ .name = "quasiquote", .line = 1 } },
+            .{ .symbol = .{ .name = "foo", .line = 1 } },
+        }, .line = 1 },
+    });
+
+    try expectParseError("`", ParseError.MissingExpr);
+}
+
+test "Parse unquote" {
+    try expectAstWithOneNode("~foo", .{
+        .list = .{ .items = &.{
+            .{ .symbol = .{ .name = "unquote", .line = 1 } },
+            .{ .symbol = .{ .name = "foo", .line = 1 } },
+        }, .line = 1 },
+    });
+
+    try expectParseError("~", ParseError.MissingExpr);
+}
+
+test "Parse unquote-splice" {
+    try expectAstWithOneNode("~@foo", .{
+        .list = .{ .items = &.{
+            .{ .symbol = .{ .name = "unquote-splice", .line = 1 } },
+            .{ .symbol = .{ .name = "foo", .line = 1 } },
+        }, .line = 1 },
+    });
+
+    try expectParseError("~@", ParseError.MissingExpr);
 }
 
 test "Parse string" {

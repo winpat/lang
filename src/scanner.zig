@@ -21,6 +21,12 @@ pub const Scanner = struct {
                 ')' => break self.createToken(.rparen),
                 '[' => break self.createToken(.lbracket),
                 ']' => break self.createToken(.rbracket),
+                '\'' => break self.createToken(.quote),
+                '`' => break self.createToken(.quasiquote),
+                '~' => if (self.peek() == '@') {
+                    self.pos += 1;
+                    break self.createToken(.unquote_splice);
+                } else break self.createToken(.unquote),
                 '"' => break try self.scanString(),
                 ':' => break try self.scanKeyword(),
                 '0'...'9' => break self.scanNumber(),
@@ -151,6 +157,10 @@ pub const Token = struct {
         nil,
         boolean_true,
         boolean_false,
+        quote,
+        quasiquote,
+        unquote,
+        unquote_splice,
     };
     tag: Tag,
     lexeme: []const u8,
@@ -244,6 +254,34 @@ test "Scan right bracket" {
     try expectToken(
         "]",
         Token{ .tag = .rbracket, .lexeme = "]", .line = 1 },
+    );
+}
+
+test "Scan quote" {
+    try expectToken(
+        "'",
+        Token{ .tag = .quote, .lexeme = "'", .line = 1 },
+    );
+}
+
+test "Scan quasiquote" {
+    try expectToken(
+        "`",
+        Token{ .tag = .quasiquote, .lexeme = "`", .line = 1 },
+    );
+}
+
+test "Scan unquote" {
+    try expectToken(
+        "~",
+        Token{ .tag = .unquote, .lexeme = "~", .line = 1 },
+    );
+}
+
+test "Scan unquote splice" {
+    try expectToken(
+        "~@",
+        Token{ .tag = .unquote_splice, .lexeme = "~@", .line = 1 },
     );
 }
 
