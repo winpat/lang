@@ -17,6 +17,7 @@ pub const Object = struct {
         native_func,
         upvalue,
         closure,
+        vector,
     };
 
     tag: Tag,
@@ -61,6 +62,11 @@ pub const Object = struct {
                 closure.deinit(allocator);
                 allocator.destroy(closure);
             },
+            .vector => {
+                const vector = self.as(Vector);
+                vector.deinit(allocator);
+                allocator.destroy(vector);
+            },
         }
     }
 
@@ -78,6 +84,7 @@ pub const Object = struct {
             .node => Node,
             .upvalue => Upvalue,
             .closure => Closure,
+            .vector => Vector,
         };
     }
 
@@ -91,6 +98,7 @@ pub const Object = struct {
             .native_func => try writer.print("{f}", .{self.as(NativeFunc)}),
             .upvalue => try writer.print("{f}", .{self.as(Upvalue)}),
             .closure => try writer.print("{f}", .{self.as(Closure)}),
+            .vector => try writer.print("{f}", .{self.as(Vector)}),
         }
     }
 
@@ -101,6 +109,7 @@ pub const Object = struct {
             .string => self.as(String).equal(other.as(String).*),
             .symbol => self.as(Symbol).equal(other.as(Symbol).*),
             .keyword => self.as(Keyword).equal(other.as(Keyword).*),
+            .vector => self.as(Vector).equal(other.as(Vector).*),
             .node, .func, .native_func, .upvalue, .closure => false,
         };
     }
@@ -318,5 +327,48 @@ pub const Closure = struct {
     pub fn format(self: Closure, writer: *Io.Writer) Io.Writer.Error!void {
         const func_name = if (self.func.name) |name| name else func_name_fallback;
         try writer.print("<closure {s}>", .{func_name});
+    }
+};
+
+pub const Vector = struct {
+    obj: Object = .{ .tag = .vector },
+    items: []const Value,
+
+    pub fn init(allocator: Allocator, values: []const Value) Allocator.Error!Vector {
+        const items = try allocator.alloc(Value, values.len);
+        @memcpy(items, values);
+        return .{ .items = items };
+    }
+
+    pub fn deinit(self: *Vector, allocator: Allocator) void {
+        allocator.free(self.items);
+    }
+
+    pub fn format(self: Vector, writer: *Io.Writer) Io.Writer.Error!void {
+        try writer.writeAll("[");
+        for (self.items, 0..) |val, idx| {
+            try writer.print("{f}", .{val});
+            if (idx + 1 != self.items.len) try writer.writeAll(" ");
+        }
+        try writer.writeAll("]");
+    }
+
+    pub fn equal(self: Vector, other: Vector) bool {
+        if (self.items.len != other.items.len) return false;
+        for (self.items, other.items) |a, b|
+            if (!a.equal(b)) return false;
+        return true;
+    }
+
+    pub fn append(self: *Vector, gc: *Gc, val: Value) Allocator.Error!*Vector {
+        // TODO Find a way to avoid the temporary allocation
+        const allocator = gc.allocator();
+        const new_items = try allocator.alloc(Value, self.items.len + 1);
+        defer allocator.free(new_items);
+
+        @memcpy(new_items[0..self.items.len], self.items);
+        new_items[self.items.len] = val;
+
+        return try gc.create(Vector, .{new_items});
     }
 };

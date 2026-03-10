@@ -14,6 +14,10 @@ pub const Op = enum {
     load_zero,
     load_one,
     load_empty_list,
+    load_empty_vec,
+
+    // Vector
+    build_vec,       // <item_count>
 
     // Arithmetic
     add,             // <argc>

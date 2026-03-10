@@ -49,6 +49,8 @@ pub const Parser = struct {
             .string => .{ .string = .{ .chars = tk.lexeme[1 .. tk.lexeme.len - 1], .line = tk.line } },
             .lparen => self.parseList(allocator, tk.line),
             .rparen => return ParseError.UnexpectedRightParen,
+            .lbracket => self.parseVector(allocator, tk.line),
+            .rbracket => return ParseError.UnexpectedRightBracket,
         };
     }
 
@@ -67,11 +69,29 @@ pub const Parser = struct {
             },
         };
     }
+
+    fn parseVector(self: *Parser, allocator: Allocator, line: u32) ParseError!Node {
+        var items = ArrayList(Node){};
+        while (try self.scanner.scanToken()) |tk| {
+            if (tk.tag == .rbracket) break;
+            const item = try self.parseExpr(allocator, tk);
+            try items.append(allocator, item);
+        } else return ParseError.MissingRightBracket;
+
+        return Node{
+            .vector = Node.Vector{
+                .items = try items.toOwnedSlice(allocator),
+                .line = line,
+            },
+        };
+    }
 };
 
 pub const ParseError = error{
     UnexpectedRightParen,
+    UnexpectedRightBracket,
     MissingRightParen,
+    MissingRightBracket,
 } || scanner.ScanError || fmt.ParseFloatError || Allocator.Error;
 
 pub const AbstractSyntaxTree = struct { nodes: []const Node };
@@ -84,6 +104,7 @@ pub const Node = union(enum) {
     symbol: Symbol,
     keyword: Keyword,
     list: List,
+    vector: Vector,
 
     pub const Number = struct { val: f64, line: u32 };
     pub const Boolean = struct { val: bool, line: u32 };
@@ -92,10 +113,19 @@ pub const Node = union(enum) {
     pub const Symbol = struct { name: []const u8, line: u32 };
     pub const Keyword = struct { name: []const u8, line: u32 };
     pub const List = struct { items: []const Node, line: u32 };
+    pub const Vector = struct { items: []const Node, line: u32 };
 
     pub fn getLine(self: Node) u32 {
         return switch (self) {
-            inline .number, .boolean, .nil, .string, .symbol, .keyword, .list => |obj| obj.line,
+            inline .number,
+            .boolean,
+            .nil,
+            .string,
+            .symbol,
+            .keyword,
+            .list,
+            .vector,
+            => |obj| obj.line,
         };
     }
 };
@@ -228,6 +258,28 @@ test "Parse multiple nodes" {
     try expectAstWithNodes("1\n2", &.{
         .{ .number = .{ .val = 1, .line = 1 } },
         .{ .number = .{ .val = 2, .line = 2 } },
+    });
+}
+
+test "Parse vector list" {
+    try expectAstWithOneNode(
+        "[]",
+        .{ .vector = .{ .items = &.{}, .line = 1 } },
+    );
+}
+
+test "Parse error on unbalanced brackets" {
+    try expectParseError("[]]", ParseError.UnexpectedRightBracket);
+    try expectParseError("[[]", ParseError.MissingRightBracket);
+}
+
+test "Parse vector with items" {
+    try expectAstWithNodes("[1 2 3]", &.{
+        .{ .vector = .{ .items = &.{
+            .{ .number = .{ .val = 1, .line = 1 } },
+            .{ .number = .{ .val = 2, .line = 1 } },
+            .{ .number = .{ .val = 3, .line = 1 } },
+        }, .line = 1 } },
     });
 }
 

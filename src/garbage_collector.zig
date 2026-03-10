@@ -11,6 +11,7 @@ const String = object.String;
 const Symbol = object.Symbol;
 const Keyword = object.Keyword;
 const Func = object.Func;
+const Vector = object.Vector;
 const Node = object.Node;
 const Upvalue = object.Upvalue;
 const Closure = object.Closure;
@@ -140,6 +141,11 @@ pub const GarbageCollector = struct {
                 try self.markValue(node.value);
                 if (node.next) |next_node|
                     try self.markObject(&next_node.obj);
+            },
+            .vector => {
+                const vector = obj.as(Vector);
+                for (vector.items) |val|
+                    try self.markValue(val);
             },
             .func => {
                 const func = obj.as(Func);

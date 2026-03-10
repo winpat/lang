@@ -19,6 +19,8 @@ pub const Scanner = struct {
                 '\n' => self.line += 1,
                 '(' => break self.createToken(.lparen),
                 ')' => break self.createToken(.rparen),
+                '[' => break self.createToken(.lbracket),
+                ']' => break self.createToken(.rbracket),
                 '"' => break try self.scanString(),
                 ':' => break try self.scanKeyword(),
                 '0'...'9' => break self.scanNumber(),
@@ -140,6 +142,8 @@ pub const Token = struct {
     const Tag = enum {
         lparen,
         rparen,
+        lbracket,
+        rbracket,
         string,
         number,
         symbol,
@@ -226,6 +230,20 @@ test "Scan right parenthesis" {
     try expectToken(
         ")",
         Token{ .tag = .rparen, .lexeme = ")", .line = 1 },
+    );
+}
+
+test "Scan left bracket" {
+    try expectToken(
+        "[",
+        Token{ .tag = .lbracket, .lexeme = "[", .line = 1 },
+    );
+}
+
+test "Scan right bracket" {
+    try expectToken(
+        "]",
+        Token{ .tag = .rbracket, .lexeme = "]", .line = 1 },
     );
 }
 

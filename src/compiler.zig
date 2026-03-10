@@ -132,6 +132,7 @@ pub const CompileError = error{
     InvalidImportForm,
     InvalidParamForm,
     UnsupportedArity,
+    TooLargeVectorLiteral,
     JumpOffsetTooLarge,
     ConstantPoolExceeded,
     LocalPoolExceeded,
@@ -251,6 +252,7 @@ fn emitExpr(cpl: *Compiler, target: *FuncState, node: Node, tail: bool) CompileE
         .symbol => |symbol| emitSymbolLookup(cpl, target, symbol),
         .keyword => |keyword| emitKeyword(cpl, target, keyword),
         .list => |list| emitForm(cpl, target, list, tail),
+        .vector => |vector| emitVector(cpl, target, vector),
     };
 }
 
@@ -361,6 +363,17 @@ fn emitConstant(target: *FuncState, constant: Value, line: u32) CompileError!voi
     } else try target.addConstant(constant);
 
     try target.addOpWithByte(.load_constant, cidx, line);
+}
+
+fn emitVector(cpl: *Compiler, target: *FuncState, vec: Node.Vector) CompileError!void {
+    switch (vec.items.len) {
+        0 => try target.addOp(.load_empty_vec, vec.line),
+        else => |n| {
+            if (n > std.math.maxInt(u8)) return CompileError.TooLargeVectorLiteral;
+            for (vec.items) |node| try emitExpr(cpl, target, node, false);
+            try target.addOpWithByte(.build_vec, @intCast(n), vec.line);
+        },
+    }
 }
 
 fn emitForm(cpl: *Compiler, target: *FuncState, form: Node.List, tail: bool) CompileError!void {
@@ -1068,6 +1081,9 @@ test "Compile data literals" {
     try expectDisasmSnapshot("keyword", @src(), ":key");
 
     try expectDisasmSnapshot("empty_list", @src(), "()");
+
+    try expectDisasmSnapshot("empty_vector", @src(), "[]");
+    try expectDisasmSnapshot("vector_3_items", @src(), "[1 2 3]");
 }
 
 test "Test constants resuse" {

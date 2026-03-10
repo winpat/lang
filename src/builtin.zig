@@ -8,6 +8,7 @@ const Gc = @import("garbage_collector.zig").GarbageCollector;
 const o = @import("object.zig");
 const Node = o.Node;
 const String = o.String;
+const Vector = o.Vector;
 const NativeFunc = o.NativeFunc;
 const Context = NativeFunc.Context;
 const RuntimeError = @import("virtual_machine.zig").RuntimeError;
@@ -26,12 +27,14 @@ pub const funcs = [_]struct { name: []const u8, impl: NativeFunc.ImplPtr }{
     .{ .name = "string?", .impl = isString },
     .{ .name = "symbol?", .impl = isSymbol },
     .{ .name = "keyword?", .impl = isKeyword },
+    .{ .name = "vector?", .impl = isVector },
     .{ .name = "function?", .impl = isFunction },
     // Sequence
     .{ .name = "list", .impl = list },
     .{ .name = "count", .impl = count },
     .{ .name = "conj", .impl = conj },
     .{ .name = "concat", .impl = concat },
+    .{ .name = "nth", .impl = nth },
     .{ .name = "first", .impl = first },
     .{ .name = "second", .impl = second },
     .{ .name = "rest", .impl = rest },
@@ -181,6 +184,19 @@ test "keyword?" {
     });
 }
 
+const isVector = objectOfType(.vector);
+
+test "vector?" {
+    var vec_obj = o.Object{ .tag = .vector };
+
+    try expectCases(isVector, &.{
+        .{ &.{object(&vec_obj)}, boolean(true) },
+        .{ &.{empty_list()}, boolean(false) },
+        .{ &.{}, RuntimeError.UnsupportedArity },
+        .{ &.{ nil(), nil() }, RuntimeError.UnsupportedArity },
+    });
+}
+
 fn isFunction(ctx: Context, args: []const Value) RuntimeError!Value {
     _ = ctx;
     if (args.len != 1) return RuntimeError.UnsupportedArity;
@@ -314,6 +330,67 @@ test "last" {
     });
 }
 
+fn nth(ctx: Context, args: []const Value) RuntimeError!Value {
+    _ = ctx;
+    if (args.len != 2) return RuntimeError.UnsupportedArity;
+    if (args[1] != .number) return RuntimeError.ValueTypeMismatch;
+
+    const idx_f = args[1].number;
+    if (idx_f < 0 or idx_f != @trunc(idx_f)) return RuntimeError.IndexOutOfBounds;
+    const idx: usize = @intFromFloat(idx_f);
+
+    switch (args[0]) {
+        .list => |lst| {
+            var curr = lst.head;
+            var i: usize = 0;
+            while (curr) |node| : ({
+                curr = node.next;
+                i += 1;
+            }) {
+                if (i == idx) return node.value;
+            }
+            return RuntimeError.IndexOutOfBounds;
+        },
+        .object => |obj| switch (obj.tag) {
+            .vector => {
+                const vec = obj.as(Vector);
+                if (idx >= vec.items.len) return RuntimeError.IndexOutOfBounds;
+                return vec.items[idx];
+            },
+            else => return RuntimeError.ValueTypeMismatch,
+        },
+        else => return RuntimeError.ValueTypeMismatch,
+    }
+}
+
+test "nth" {
+    var third_node = Node{ .value = num(3) };
+    var second_node = Node{ .value = num(2), .next = &third_node };
+    var first_node = Node{ .value = num(1), .next = &second_node };
+
+    var vec = Vector{ .items = &.{ num(10), num(20), num(30) } };
+
+    try expectCases(nth, &.{
+        // List access
+        .{ &.{ .{ .list = .{ .head = &first_node } }, num(0) }, num(1) },
+        .{ &.{ .{ .list = .{ .head = &first_node } }, num(2) }, num(3) },
+        .{ &.{ .{ .list = .{ .head = &first_node } }, num(3) }, RuntimeError.IndexOutOfBounds },
+        .{ &.{ empty_list(), num(0) }, RuntimeError.IndexOutOfBounds },
+        // Vector access
+        .{ &.{ object(&vec.obj), num(0) }, num(10) },
+        .{ &.{ object(&vec.obj), num(2) }, num(30) },
+        .{ &.{ object(&vec.obj), num(3) }, RuntimeError.IndexOutOfBounds },
+        // Negative and non-integer indices
+        .{ &.{ object(&vec.obj), num(-1) }, RuntimeError.IndexOutOfBounds },
+        .{ &.{ object(&vec.obj), num(1.5) }, RuntimeError.IndexOutOfBounds },
+        // Arity and type errors
+        .{ &.{}, RuntimeError.UnsupportedArity },
+        .{ &.{empty_list()}, RuntimeError.UnsupportedArity },
+        .{ &.{ num(1), num(0) }, RuntimeError.ValueTypeMismatch },
+        .{ &.{ empty_list(), boolean(true) }, RuntimeError.ValueTypeMismatch },
+    });
+}
+
 fn count(ctx: Context, args: []const Value) RuntimeError!Value {
     _ = ctx;
     if (args.len != 1) return RuntimeError.UnsupportedArity;
@@ -324,9 +401,10 @@ fn count(ctx: Context, args: []const Value) RuntimeError!Value {
             while (curr) |node| : (curr = node.next) n += 1;
             return num(n);
         },
-        .object => |obj| {
-            if (obj.tag != .string) return RuntimeError.ValueTypeMismatch;
-            return num(@floatFromInt(obj.as(String).len));
+        .object => |obj| switch (obj.tag) {
+            .string => return num(@floatFromInt(obj.as(String).len)),
+            .vector => return num(@floatFromInt(obj.as(Vector).items.len)),
+            else => return RuntimeError.ValueTypeMismatch,
         },
         else => return RuntimeError.ValueTypeMismatch,
     }
@@ -336,12 +414,17 @@ test "count" {
     var third_node = Node{ .value = num(3) };
     var second_node = Node{ .value = num(2), .next = &third_node };
     var first_node = Node{ .value = num(1), .next = &second_node };
+
     const hello = "hello";
     var hello_str = String{ .len = hello.len, .ptr = hello.ptr };
+
+    var vec = Vector{ .items = &.{} };
+
     try expectCases(count, &.{
         .{ &.{empty_list()}, num(0) },
         .{ &.{.{ .list = .{ .head = &first_node } }}, num(3) },
         .{ &.{object(&hello_str.obj)}, num(5) },
+        .{ &.{object(&vec.obj)}, num(0) },
         .{ &.{}, RuntimeError.UnsupportedArity },
         .{ &.{ nil(), nil() }, RuntimeError.UnsupportedArity },
     });
@@ -349,9 +432,21 @@ test "count" {
 
 fn conj(ctx: Context, args: []const Value) RuntimeError!Value {
     if (args.len != 2) return RuntimeError.UnsupportedArity;
-    if (args[0] != .list) return RuntimeError.ValueTypeMismatch;
-    const new_node = try ctx.gc.create(Node, .{ args[1], args[0].list.head });
-    return .{ .list = .{ .head = new_node } };
+    switch (args[0]) {
+        .list => {
+            const new_node = try ctx.gc.create(Node, .{ args[1], args[0].list.head });
+            return .{ .list = .{ .head = new_node } };
+        },
+        .object => |obj| switch (obj.tag) {
+            .vector => {
+                const vec = obj.as(Vector);
+                const new_vec = try vec.append(ctx.gc, args[1]);
+                return .{ .object = &new_vec.obj };
+            },
+            else => return RuntimeError.ValueTypeMismatch,
+        },
+        else => return RuntimeError.ValueTypeMismatch,
+    }
 }
 
 test "conj" {
@@ -382,6 +477,30 @@ test "conj" {
         const result = try conj(ctx, &.{ .{ .list = .{ .head = &existing } }, num(1) });
         try tst.expectEqual(num(1), result.list.head.?.value);
         try tst.expectEqual(num(2), result.list.head.?.next.?.value);
+    }
+
+    // Conj on to empty vector
+    {
+        var vec = Vector{ .items = &.{} };
+        const vec_val = Value{ .object = &vec.obj };
+
+        const result = try conj(ctx, &.{ vec_val, num(1) });
+        const new_vec = result.object.as(Vector);
+
+        try tst.expectEqual(1, new_vec.items.len);
+        try tst.expectEqualSlices(Value, &.{num(1)}, new_vec.items);
+    }
+
+    // Conj on to non-empty vector
+    {
+        var vec = Vector{ .items = &.{num(1)} };
+        const vec_val = Value{ .object = &vec.obj };
+
+        const result = try conj(ctx, &.{ vec_val, num(2) });
+        const new_vec = result.object.as(Vector);
+
+        try tst.expectEqual(2, new_vec.items.len);
+        try tst.expectEqualSlices(Value, &.{ num(1), num(2) }, new_vec.items);
     }
 
     try expectCases(conj, &.{

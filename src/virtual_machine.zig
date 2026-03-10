@@ -20,6 +20,7 @@ const Func = object.Func;
 const NativeFunc = object.NativeFunc;
 const Symbol = object.Symbol;
 const Upvalue = object.Upvalue;
+const Vector = object.Vector;
 const Closure = object.Closure;
 const Op = @import("bytecode.zig").Op;
 const Parser = @import("parser.zig").Parser;
@@ -109,6 +110,17 @@ pub const VirtualMachine = struct {
                 .load_true => try stack.push(.{ .boolean = true }),
                 .load_false => try stack.push(.{ .boolean = false }),
                 .load_empty_list => try stack.push(.{ .list = .{} }),
+                .load_empty_vec => {
+                    const vec = try gc.create(Vector, .{&.{}});
+                    try stack.push(.{ .object = &vec.obj });
+                },
+                .build_vec => {
+                    const item_count = frame.readByte();
+                    const items = stack.items[stack.pos - item_count .. stack.pos];
+                    var vec = try gc.create(Vector, .{items});
+                    stack.pos -= item_count;
+                    try stack.push(.{ .object = &vec.obj });
+                },
                 .create_closure => {
                     const cidx = frame.readByte();
                     const val = frame.getConstant(cidx);
@@ -507,6 +519,7 @@ pub const RuntimeError = error{
     UnboundSymbol,
     NotCallable,
     UnsupportedArity,
+    IndexOutOfBounds,
     ModuleNotFound,
     ModuleNotCompiled,
 } || StackError || Allocator.Error || Io.Writer.Error || Io.Reader.Error;
@@ -692,6 +705,24 @@ test "Unwind stack on error" {
 
 test "Eval constant" {
     try expectEvalTo("2", .{ .number = 2 });
+}
+
+test "Eval vector literal" {
+    // TODO Refactor expectEvalTo so we can access the GC of it.
+    var gc = Gc.init(tst.allocator);
+    defer gc.deinit();
+
+    const vec = try gc.create(Vector, .{
+        &.{
+            Value{ .number = 1 },
+            Value{ .number = 2 },
+            Value{ .number = 3 },
+        },
+    });
+
+    const expected = Value{ .object = &vec.obj };
+
+    try expectEvalTo("[1 2 3]", expected);
 }
 
 test "Eval bytecode-encoded data literals" {
